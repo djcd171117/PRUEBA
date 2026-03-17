@@ -134,47 +134,55 @@ with st.spinner("⏳ Cargando Gemelo Digital y Entrenando IA (Esto tomará unos 
         sistema_listo = False
 
 # ==============================================================================
-# CAPA 4: FRONT-END "ORÁCULO" (Clic en Mapa + Recomendación Automática)
+# CAPA 4: FRONT-END "ORÁCULO" (Con Seguro contra KeyError)
 # ==============================================================================
 if sistema_listo:
     st.title("🎯 Oráculo Urbano: Inteligencia Territorial")
-    st.markdown("### Haz clic en el mapa para descubrir el mejor giro comercial para ese predio")
+    st.markdown("### Haz clic en el mapa para descubrir el mejor giro comercial")
 
-    # 1. GESTIÓN DE COORDENADAS (Memoria de Clic)
+    # --- SEGURO DE INICIALIZACIÓN ---
+    # Si la memoria de coordenadas no existe, la creamos con un valor por defecto
     if 'coords' not in st.session_state:
         st.session_state.coords = {"lat": 20.605192, "lng": -100.382373}
-
-    # Creamos dos columnas: Mapa a la izquierda, Resultados a la derecha
+    
+    # Creamos las columnas
     col_mapa, col_stats = st.columns([2, 1])
 
     with col_mapa:
-        # Dibujamos el mapa base
-        m = folium.Map(location=[st.session_state.coords["lat"], st.session_state.coords["lng"]], 
-                       zoom_start=18, tiles='CartoDB positron')
+        # Usamos las coordenadas de la memoria (session_state)
+        lat_actual = st.session_state.coords["lat"]
+        lon_actual = st.session_state.coords["lng"]
         
-        # Marcador en la posición actual
-        folium.Marker([st.session_state.coords["lat"], st.session_state.coords["lng"]], 
-                      icon=folium.Icon(color='blue', icon='info-sign')).add_to(m)
+        m = folium.Map(location=[lat_actual, lon_actual], zoom_start=18, tiles='CartoDB positron')
+        folium.Marker([lat_actual, lon_actual], icon=folium.Icon(color='blue', icon='info-sign')).add_to(m)
         
-        # El mapa se vuelve un sensor de clics
+        # Renderizamos el mapa
         mapa_interactivo = st_folium(m, width="100%", height=500, key="selector_urbano")
 
-        # Si el usuario hace clic, actualizamos la memoria y recargamos
+        # --- LÓGICA DE ACTUALIZACIÓN ---
+        # Solo actualizamos si el usuario realmente hizo clic en un lugar nuevo
         if mapa_interactivo.get("last_clicked"):
-            nueva_lat = mapa_interactivo["last_clicked"]["lat"]
-            nueva_lng = mapa_interactivo["last_clicked"]["lng"]
-            if nueva_lat != st.session_state.coords["lat"]:
-                st.session_state.coords = {"lat": nueva_lat, "lng": nueva_lng}
-                st.rerun()
+            click_lat = mapa_interactivo["last_clicked"]["lat"]
+            click_lng = mapa_interactivo["last_clicked"]["lng"]
+            
+            # Verificamos si el clic es diferente al que ya tenemos guardado
+            if click_lat != st.session_state.coords["lat"]:
+                st.session_state.coords = {"lat": click_lat, "lng": click_lng}
+                st.rerun() # Forzamos recarga para mover el marcador azul
 
     with col_stats:
-        st.subheader("📊 Análisis de Micro-Entorno")
-        lat, lon = st.session_state.coords["lat"], st.session_state.coords["lng"]
-        st.write(f"**Ubicación:** `{lat:.6f}, {lon:.6f}`")
+        st.subheader("📊 Análisis de Ubicación")
+        # Leemos siempre de la memoria segura
+        curr_lat = st.session_state.coords["lat"]
+        curr_lon = st.session_state.coords["lng"]
         
-        # Botón para activar la IA
+        st.write(f"**Latitud:** `{curr_lat:.6f}`")
+        st.write(f"**Longitud:** `{curr_lon:.6f}`")
+        
         if st.button("🚀 Lanzar Recomendador de IA", type="primary", use_container_width=True):
             with st.spinner("Escaneando el Gemelo Digital..."):
+                # (Aquí sigue el resto de tu lógica de giros_evaluar que pusimos antes)
+                # ...
                 
                 # --- MOTOR DE RECOMENDACIÓN MULTI-GIRO ---
                 # Definimos los giros a evaluar (Puedes expandir esta lista)
