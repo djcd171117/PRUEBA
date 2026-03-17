@@ -15,7 +15,7 @@ import googlemaps
 from google import genai # LIBRERÍA NUEVA OFICIAL
 import json
 
-st.set_page_config(page_title="Oráculo Urbano PropTech", layout="wide")
+st.set_page_config(page_title="Análisis urbano", layout="wide")
 
 # ==============================================================================
 # LLAVES DE API (INTEGRADAS)
@@ -128,7 +128,7 @@ if 'analisis' not in st.session_state:
     st.session_state.analisis = False
 
 st.title("🎯 Oráculo Urbano PropTech")
-st.markdown("### Plataforma Inteligente de Viabilidad Comercial (Desarrollado con Gemini 3)")
+st.markdown("### Plataforma de Inteligencia Territorial")
 
 c_map, c_diag = st.columns([2, 1])
 
