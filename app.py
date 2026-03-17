@@ -28,12 +28,12 @@ RUTA_HISTORICO = "denue_inegi_222_.csv" # Tu DENUE del pasado
 RUTA_ACTUAL = "denue_inegi_22_.csv"     # Tu DENUE del presente
 
 # ==============================================================================
-# CAPA 2: EL CEREBRO (IA + GOOGLE PLACES + INFERENCIA)
+# CAPA 2: EL CEREBRO (IA + GOOGLE PLACES + VALORIZACIÓN TEMPORAL)
 # ==============================================================================
 import googlemaps
+from datetime import datetime
 
-# Configuración de Google Places (Usa el secreto de Streamlit o tu variable)
-# Para producción, usa: st.secrets["GOOGLE_API_KEY"]
+# Configuración de Google Places
 G_CLIENT = googlemaps.Client(key='AIzaSyDbysfcLFSNOruYHHaQgGhbqtBllqdtlY0')
 
 @st.cache_resource
@@ -104,24 +104,41 @@ def entrenar_cerebro_ia(_df_entrenamiento):
     
     return modelo, scaler, kmeans, variables_fisicas
 
-def obtener_contexto_google(lat, lon):
-    """Detección semántica vía Google Places API."""
+def obtener_contexto_detallado_google(lat, lon):
+    """Extrae ADN semántico y patrones de concurrencia temporal."""
     try:
-        res = G_CLIENT.places_nearby(location=(lat, lon), radius=60)
-        tipos, precios = [], []
+        res = G_CLIENT.places_nearby(location=(lat, lon), radius=100)
+        tipos, precios, ratings = [], [], []
+        patron_flujo = "Comercio Mixto"
+        
         for p in res.get('results', []):
-            tipos.extend(p.get('types', []))
+            t_list = p.get('types', [])
+            tipos.extend(t_list)
             if 'price_level' in p: precios.append(p['price_level'])
+            if 'rating' in p: ratings.append(p['rating'])
+            
+            # Inferencia de flujos temporales
+            if any(x in t_list for x in ['night_club', 'bar', 'restaurant']):
+                patron_flujo = "Vida Nocturna / Gastronómico"
+            elif any(x in t_list for x in ['office', 'bank', 'government_office']):
+                patron_flujo = "Corporativo (Lun-Vie)"
         
         es_mall = any(x in tipos for x in ['shopping_mall', 'department_store'])
         nse_val = "Premium" if (len(precios) > 0 and (sum(precios)/len(precios)) >= 2.2) else None
-        return es_mall, nse_val
+        calidad = sum(ratings)/len(ratings) if ratings else 0
+        
+        return {
+            'es_mall': es_mall, 
+            'nse_google': nse_val, 
+            'patron_flujo': patron_flujo,
+            'calidad_zona': calidad
+        }
     except:
-        return False, None
+        return {'es_mall': False, 'nse_google': None, 'patron_flujo': "No detectado", 'calidad_zona': 0}
 
 def clasificar_micro_entorno(p_geom, edificios, denue_puntos, es_mall_google):
-    """Detección de uso de suelo híbrida (Geometría + Google)."""
-    if es_mall_google: return "Plaza Comercial (Confirmado Google)"
+    """Detección de uso de suelo híbrida (Geometría + Semántica)."""
+    if es_mall_google: return "Plaza Comercial / Retail Hub"
     
     edificio_actual = edificios[edificios.intersects(p_geom)]
     if edificio_actual.empty: return "Lote Baldío / Espacio Abierto"
@@ -131,11 +148,11 @@ def clasificar_micro_entorno(p_geom, edificios, denue_puntos, es_mall_google):
     num_locales = len(denue_puntos[denue_puntos.intersects(p_geom.buffer(80))])
     
     if area_huella > 1500:
-        return "Plaza Comercial / Shopping Center" if num_locales > 3 else "Gran Superficie / Nave"
-    return "Local de Corredor (Grano Fino)" if area_huella < 500 else "Uso Mixto / Habitacional"
+        return "Lifestyle Center / Zona Alto Valor" if num_locales > 3 else "Tienda Ancla / Big Box"
+    return "Corredor Comercial (Grano Fino)" if area_huella < 500 else "Uso Mixto / Habitacional"
 
 def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
-    """Inferencia Maestra Enriquecida."""
+    """Inferencia Maestra Enriquecida con Valorización Temporal."""
     # 1. Recuperar Estado
     crs_obj = st.session_state.crs_obj
     edificios = st.session_state.edificios_fusionados
@@ -147,18 +164,18 @@ def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
     escalador = st.session_state.escalador
     cols_fisicas = st.session_state.cols_fisicas
 
-    # 2. Geometría y Google
+    # 2. Geometría y ADN Google
     p_geom = gpd.GeoSeries([Point(lon, lat)], crs="EPSG:4326").to_crs(crs_obj).geometry[0]
-    es_mall_g, nse_g = obtener_contexto_google(lat, lon)
+    ctx_g = obtener_contexto_detallado_google(lat, lon)
     
-    # 3. Atributos Espaciales
+    # 3. Atributos SIG
     masa_critica = edificios.clip(p_geom.buffer(50)).area.sum()
     dist_ancla = anclas.distance(p_geom).min()
     dist_esq = nodos.distance(p_geom).min()
     idx_nodo = nodos.distance(p_geom).idxmin()
     centralidad_val = nodos.loc[idx_nodo, 'betweenness'] if 'betweenness' in nodos.columns else 0.001
     
-    # 4. SATURACIÓN ESPECÍFICA (Varianza por Giro)
+    # 4. Saturación por Giro (Evita resultados planos)
     locales_mismo_giro = df_hist[df_hist['codigo_act'] == str(giro_scian)]
     if not locales_mismo_giro.empty:
         dist_comp = locales_mismo_giro.distance(p_geom).min()
@@ -166,11 +183,11 @@ def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
     else:
         dist_comp, saturacion = 800, 0
 
-    # 5. Clasificación y NSE
-    tipo_predio = clasificar_micro_entorno(p_geom, edificios, df_hist, es_mall_g)
-    seg_nse = nse_g if nse_g else ('Premium' if masa_critica > 6000 else ('Medio' if masa_critica > 1800 else 'Popular'))
+    # 5. Inferencia de Entorno
+    tipo_predio = clasificar_micro_entorno(p_geom, edificios, df_hist, ctx_g['es_mall'])
+    seg_nse = ctx_g['nse_google'] if ctx_g['nse_google'] else ('Premium' if masa_critica > 6000 else ('Medio' if masa_critica > 1800 else 'Popular'))
     
-    # 6. Predicción IA
+    # 6. Ejecución IA
     df_cluster = pd.DataFrame([[dist_comp, masa_critica, dist_ancla, dist_esq]], columns=cols_fisicas)
     tribu_val = f"Perfil_{modelo_kmeans.predict(escalador.transform(df_cluster))[0]}"
     
@@ -180,19 +197,38 @@ def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
         'centralidad_flujo': centralidad_val, 'segmento_nse': seg_nse
     }])
     
-    prob_exito = modelo_cat.predict_proba(X_sim)[0][1]
+    prob_base = modelo_cat.predict_proba(X_sim)[0][1]
     
-    # 7. AJUSTES DE REALISMO LÓGICO
-    if "Plaza" in tipo_predio: prob_exito *= 1.3
-    if saturacion > 3: prob_exito *= 0.8  # Penalizar por saturación del mismo giro
-    if seg_nse == "Premium" and str(giro_scian).startswith('722518'): prob_exito *= 0.4 # Cocina económica en zona lujo
+    # 7. MATRIZ DE VALORIZACIÓN TEMPORAL Y AFINIDAD
+    valor_temporal = 1.0
+    dias_pico = "Sábados y Domingos"
+    
+    if ctx_g['patron_flujo'] == "Corporativo (Lun-Vie)":
+        dias_pico = "Lunes a Viernes"
+        if giro_scian in ['722518', '461110']: valor_temporal = 1.6 # Gran valor para comida/super en oficinas
+            
+    elif ctx_g['patron_flujo'] == "Vida Nocturna / Gastronómico":
+        dias_pico = "Jueves a Sábado (Noche)"
+        if giro_scian in ['722511', '812110']: valor_temporal = 1.4
+
+    # Ajustes finales de probabilidad
+    prob_exito = prob_base * valor_temporal
+    if saturacion > 3: prob_exito *= 0.6 # Castigo por canibalización directa
+    if "Plaza" in tipo_predio and str(giro_scian).startswith(('812', '621')): prob_exito *= 1.3
+    
+    prob_exito = min(max(prob_exito, 0.05), 0.96)
     
     contexto = {
-        'tipo_predio': tipo_predio, 'conectividad': "Flujo Alto" if centralidad_val > 0.006 else "Local",
-        'masa_critica': masa_critica, 'segmento_nse': seg_nse, 'es_informal': (centralidad_val > 0.008 and masa_critica < 2000)
+        'tipo_predio': tipo_predio, 
+        'segmento_nse': seg_nse,
+        'patron_flujo': ctx_g['patron_flujo'],
+        'dias_pico': dias_pico,
+        'masa_critica': masa_critica,
+        'potencial_renta': "Alto" if valor_temporal > 1.3 else "Moderado",
+        'es_informal': (centralidad_val > 0.008 and masa_critica < 2000)
     }
     
-    return [1-min(prob_exito, 0.98), min(prob_exito, 0.98)], contexto, X_sim.iloc[0]
+    return [1-prob_exito, prob_exito], contexto, X_sim.iloc[0]
 # ==============================================================================
 # CAPA 3: INICIALIZACIÓN (SISTEMA)
 # ==============================================================================
