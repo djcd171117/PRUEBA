@@ -28,7 +28,7 @@ RUTA_HISTORICO = "denue_inegi_222_.csv"
 
 # Llaves de APIs (Idealmente pásalas a st.secrets en producción)
 G_CLIENT = googlemaps.Client(key='AIzaSyDbysfcLFSNOruYHHaQgGhbqtBllqdtlY0')
-genai.configure(api_key="AIzaSyAA6jOtI3YoCXQstAPTSz4Gw_PccEOmmJc") # <--- COLOCA TU LLAVE DE GEMINI AQUÍ
+genai.configure(api_key="TU_API_KEY_DE_GEMINI") # <--- COLOCA TU LLAVE DE GEMINI AQUÍ
 
 # ==============================================================================
 # CAPA 2: EL CEREBRO (IA + GOOGLE + AGLOMERACIÓN + IA GENERATIVA)
@@ -325,16 +325,16 @@ if st.session_state.analisis:
     
     with t1:
         st.write("### Análisis de Infraestructura")
-        st.metric("Clasificación de Suelo", info['tipo_predio'])
-        st.metric("Masa Crítica Construida", f"{info['masa_critica']:.0f} m²")
+        st.metric("Clasificación de Suelo", info.get('tipo_predio', "N/A"))
+        st.metric("Masa Crítica Construida", f"{info.get('masa_critica', 0):.0f} m²")
         st.write(f"**Índice de Vitalidad:** {info.get('indice_vitalidad', 'N/A')}")
-        if "Decadencia" in info['tipo_predio']: 
+        if "Decadencia" in info.get('tipo_predio', ""): 
             st.error("⚠️ Alerta: Volumen de edificio alto pero nula tracción digital (Reseñas Bajas).")
             
     with t2:
         st.write("### Perfil Socioeconómico")
-        st.subheader(f"NSE Deducido: {info['segmento_nse']}")
-        st.info("Escolaridad: " + ("Superior" if info['segmento_nse'] == "Premium" else "Media"))
+        st.subheader(f"NSE Deducido: {info.get('segmento_nse', 'N/A')}")
+        st.info("Escolaridad: " + ("Superior" if info.get('segmento_nse') == "Premium" else "Media"))
         if info.get('es_informal'): 
             st.warning("⚠️ Zona con alta fricción de comercio informal detectada.")
             
@@ -346,7 +346,7 @@ if st.session_state.analisis:
             st.metric("Días de Mayor Flujo", info.get('dias_pico', "N/A"))
         with c_f2:
             st.metric("Potencial de Renta", info.get('potencial_renta', "Moderado"))
-        st.write(f"**Patrón Dominante:** {info['patron_flujo']}")
+        st.write(f"**Patrón Dominante:** {info.get('patron_flujo', 'N/A')}")
         
     with t4:
         st.write("### Ranking de Oportunidad (Modelo Cuantitativo)")
