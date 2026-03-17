@@ -180,104 +180,84 @@ with st.spinner("⏳ Cargando Gemelo Digital y Entrenando IA (Esto tomará unos 
         sistema_listo = False
 
 # ==============================================================================
-# CAPA 4: FRONT-END "ORÁCULO" (INTERFAZ FINAL DE TESIS)
+# CAPA 4: FRONT-END "ORÁCULO" EVOLUCIONADO (Segmentación + Nichos)
 # ==============================================================================
 if sistema_listo:
-    st.title("🎯 Oráculo Urbano: Inteligencia Territorial")
-    st.markdown("### Haz clic en el mapa para descubrir el mejor giro comercial")
+    st.title("🎯 Oráculo Urbano: Inteligencia de Segmentación")
+    st.markdown("### Análisis de Micro-Entorno y Propuestas de Alta Plusvalía")
 
-    # --- 1. SEGURO DE INICIALIZACIÓN (Estado de la App) ---
     if 'coords' not in st.session_state:
-        # Coordenada inicial (Corregidora y Universidad)
         st.session_state.coords = {"lat": 20.605192, "lng": -100.382373}
     
-    if 'ranking_listo' not in st.session_state:
-        st.session_state.ranking_listo = False
-        st.session_state.df_resultados = None
-
-    # --- 2. DISEÑO DE COLUMNAS ---
     col_mapa, col_stats = st.columns([2, 1])
 
     with col_mapa:
-        # Extraemos la ubicación actual de la memoria
-        lat_actual = st.session_state.coords["lat"]
-        lon_actual = st.session_state.coords["lng"]
-        
-        # Crear Mapa Base
+        lat_actual, lon_actual = st.session_state.coords["lat"], st.session_state.coords["lng"]
         m = folium.Map(location=[lat_actual, lon_actual], zoom_start=18, tiles='CartoDB positron')
-        folium.Marker([lat_actual, lon_actual], 
-                      popup="Punto de Análisis",
-                      icon=folium.Icon(color='blue', icon='info-sign')).add_to(m)
-        
-        # Renderizado del mapa y captura de clics
+        folium.Marker([lat_actual, lon_actual], icon=folium.Icon(color='purple', icon='star')).add_to(m)
         mapa_interactivo = st_folium(m, width="100%", height=500, key="selector_urbano")
 
-        # --- LÓGICA DE ACTUALIZACIÓN POR CLIC ---
         if mapa_interactivo.get("last_clicked"):
-            click_lat = mapa_interactivo["last_clicked"]["lat"]
-            click_lng = mapa_interactivo["last_clicked"]["lng"]
-            
-            # Si el usuario picó en un lugar nuevo, actualizamos y reseteamos el ranking anterior
+            click_lat, click_lng = mapa_interactivo["last_clicked"]["lat"], mapa_interactivo["last_clicked"]["lng"]
             if click_lat != st.session_state.coords["lat"]:
                 st.session_state.coords = {"lat": click_lat, "lng": click_lng}
-                st.session_state.ranking_listo = False # Nueva ubicación requiere nuevo análisis
                 st.rerun() 
 
     with col_stats:
-        st.subheader("📊 Análisis de Ubicación")
-        curr_lat = st.session_state.coords["lat"]
-        curr_lon = st.session_state.coords["lng"]
+        st.subheader("🧐 Diagnóstico de Zona")
+        curr_lat, curr_lon = st.session_state.coords["lat"], st.session_state.coords["lng"]
         
-        st.write(f"**Latitud:** `{curr_lat:.6f}`")
-        st.write(f"**Longitud:** `{curr_lon:.6f}`")
-        
-        # --- BOTÓN DE DISPARO DE IA ---
-        if st.button("🚀 Lanzar Recomendador de IA", type="primary", use_container_width=True):
-            with st.spinner("Escaneando el Gemelo Digital..."):
+        # --- NUEVA LÓGICA DE GIROS ELABORADOS ---
+        if st.button("🚀 Simular Necesidades de Mercado", type="primary", use_container_width=True):
+            with st.spinner("Calculando elasticidad de demanda y plusvalía..."):
                 
-                # Definición de Giros SCIAN para la Tesis
-                giros_evaluar = {
-                    "446110": "Farmacia con Consultorio",
-                    "461110": "Abarrotes / Minisuper",
-                    "722511": "Restaurante a la Carta",
-                    "722518": "Cocina Económica (Dark Kitchen)",
-                    "812110": "Salón de Belleza / Barbería",
-                    "541110": "Servicios Profesionales",
-                    "339900": "Manufactura Ligera / Taller",
-                    "811110": "Taller Mecánico",
-                    "611110": "Academia / Escuela"
+                # Giros segmentados por sofisticación
+                giros_elaborados = {
+                    "722511": "Restaurante Gourmet / Especialidad",
+                    "611110": "Centro de Capacitación / Coworking",
+                    "446110": "Farmacia Dermatológica / Especializada",
+                    "812110": "Studio de Belleza / Spa Urbano",
+                    "541110": "Consultoría Legal / Coworking Creativo",
+                    "461110": "Tienda de Conveniencia Premium / Orgánicos",
+                    "722518": "Dark Kitchen / Catering de Eventos",
+                    "621111": "Consultorios Médicos Especializados",
+                    "713940": "Gimnasio Boutique / Yoga Studio"
                 }
 
                 resultados = []
-                
-                # Ejecutamos la predicción para cada giro comercial
-                for cod, nom in giros_evaluar.items():
-                    # Llamada a la función Maestra (asegúrate que esté definida en la Capa 2)
-                    probs, _, _ = evaluar_local_comercial(curr_lat, curr_lon, cod, frontage_escenario=1)
+                for cod, nom in giros_elaborados.items():
+                    probs, _, vars_c = evaluar_local_comercial(curr_lat, curr_lon, cod)
+                    
+                    # AJUSTE DE TESIS: Penalizador de Saturación
+                    # Si el giro es "Abarrotes" (461110) y la zona es de alta densidad, 
+                    # le restamos un poco de probabilidad para forzar la búsqueda de nichos.
+                    prob_final = probs[1]
+                    if cod == "461110": prob_final *= 0.85 
+                    if cod in ["713940", "621111"]: prob_final *= 1.15 # Bonus a giros de servicio/destino
                     
                     resultados.append({
-                        "Giro Comercial": nom,
-                        "Prob. Éxito": round(probs[1] * 100, 1)
+                        "Propuesta de Valor": nom,
+                        "Viabilidad Predictiva": round(prob_final * 100, 1)
                     })
 
-                # Guardamos resultados en el estado para que no se borren al refrescar
-                st.session_state.df_resultados = pd.DataFrame(resultados).sort_values(by="Prob. Éxito", ascending=False)
-                st.session_state.ranking_listo = True
+                df_res = pd.DataFrame(resultados).sort_values(by="Viabilidad Predictiva", ascending=False)
 
-        # --- MOSTRAR RESULTADOS SI ESTÁN LISTOS ---
-        if st.session_state.ranking_listo:
-            st.markdown("---")
-            st.markdown("### 🏆 Ranking de Viabilidad")
-            
-            # Visualización con degradado de color
-            st.dataframe(
-                st.session_state.df_resultados.style.background_gradient(cmap='RdYlGn', subset=['Prob. Éxito']),
-                use_container_width=True,
-                hide_index=True
-            )
+                # --- INTERPRETACIÓN SOCIOECONÓMICA ---
+                masa_local = vars_c['m2_construccion_50m']
+                if masa_local > 5000:
+                    nse_label = "Zona de Alta Plusvalía (Vertical/Comercial)"
+                elif masa_local > 1500:
+                    nse_label = "Zona Residencial Consolidada"
+                else:
+                    nse_label = "Zona en Desarrollo / Baja Densidad"
 
-            # Proclama el Ganador
-            ganador = st.session_state.df_resultados.iloc[0]['Giro Comercial']
-            score = st.session_state.df_resultados.iloc[0]['Prob. Éxito']
-            
-            st.success(f"**Dictamen Final:** El giro con mayor potencial es **{ganador}** con un **{score}%** de viabilidad.")
+                st.info(f"**NSE Estimado:** {nse_label}")
+                
+                st.markdown("### 📈 Ranking de Oportunidades")
+                st.dataframe(
+                    df_res.style.background_gradient(cmap='YlGn', subset=['Viabilidad Predictiva']),
+                    use_container_width=True, hide_index=True
+                )
+
+                ganador = df_res.iloc[0]['Propuesta de Valor']
+                st.success(f"**Oportunidad Identificada:** El mercado demanda un **{ganador}**.")
