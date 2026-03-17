@@ -28,6 +28,52 @@ RUTA_ACTUAL = "denue_inegi_22_.csv"     # Tu DENUE del presente
 # ==============================================================================
 # CAPA 2: EL CEREBRO (FUNCIONES CACHEADAS)
 # ==============================================================================
+
+# Coloca esto antes de cualquier código de botones o interfaz
+def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
+    # A) Proyectar el punto
+    p_geom = gpd.GeoSeries([Point(lon, lat)], crs="EPSG:4326").to_crs(crs_obj).geometry[0]
+
+    # B) Cálculos espaciales (Usando las variables globales que cargamos en la Capa 3)
+    # Masa Crítica
+    masa_critica = edificios_fusionados.clip(p_geom.buffer(50)).area.sum()
+    
+    # Distancia a anclas y esquinas
+    dist_ancla = anclas_proyectadas.distance(p_geom).min()
+    dist_esq = nodos_gdf.distance(p_geom).min()
+    
+    # Competencia (Buscamos locales del mismo sector)
+    # 'df_historico_procesado' es la tabla que ya tiene las distancias calculadas
+    locales_comp = df_historico_procesado[df_historico_procesado['codigo_act'].str.startswith(str(giro_scian)[:3])]
+    dist_comp = locales_comp.distance(p_geom).min() if not locales_comp.empty else 500
+
+    # C) Sintaxis Espacial
+    idx_nodo = nodos_gdf.distance(p_geom).idxmin()
+    centralidad_val = nodos_gdf.loc[idx_nodo, 'betweenness'] if 'betweenness' in nodos_gdf.columns else 0.001
+    
+    idx_arista = aristas_gdf.distance(p_geom).idxmin()
+    jerarquia_val = aristas_gdf.loc[idx_arista, 'highway_clean']
+
+    # D) Perfil Urbano (K-Means)
+    df_cluster = pd.DataFrame([[dist_comp, masa_critica, dist_ancla, dist_esq]], columns=cols_fisicas)
+    tribu_val = f"Perfil_{modelo_kmeans.predict(escalador.transform(df_cluster))[0]}"
+
+    # E) Matriz para CatBoost
+    X_sim = pd.DataFrame([{
+        'codigo_act': str(giro_scian),
+        'dist_competidor_m': dist_comp,
+        'm2_construccion_50m': masa_critica,
+        'dist_ancla_urbana_m': dist_ancla,
+        'dist_esquina_m': dist_esq,
+        'tipologia_urbana': tribu_val,
+        'centralidad_flujo': centralidad_val,
+        'jerarquia_vial': jerarquia_val,
+        'frontage_visible': frontage_escenario
+    }])
+
+    probs = modelo_cat.predict_proba(X_sim)[0]
+    return probs, None, X_sim.iloc[0]
+## nuevo bloque
 @st.cache_resource
 def cargar_entorno_base(bbox):
     # Calles
@@ -134,58 +180,62 @@ with st.spinner("⏳ Cargando Gemelo Digital y Entrenando IA (Esto tomará unos 
         sistema_listo = False
 
 # ==============================================================================
-# CAPA 4: FRONT-END "ORÁCULO" (Con Seguro contra KeyError)
+# CAPA 4: FRONT-END "ORÁCULO" (INTERFAZ FINAL DE TESIS)
 # ==============================================================================
 if sistema_listo:
     st.title("🎯 Oráculo Urbano: Inteligencia Territorial")
     st.markdown("### Haz clic en el mapa para descubrir el mejor giro comercial")
 
-    # --- SEGURO DE INICIALIZACIÓN ---
-    # Si la memoria de coordenadas no existe, la creamos con un valor por defecto
+    # --- 1. SEGURO DE INICIALIZACIÓN (Estado de la App) ---
     if 'coords' not in st.session_state:
+        # Coordenada inicial (Corregidora y Universidad)
         st.session_state.coords = {"lat": 20.605192, "lng": -100.382373}
     
-    # Creamos las columnas
+    if 'ranking_listo' not in st.session_state:
+        st.session_state.ranking_listo = False
+        st.session_state.df_resultados = None
+
+    # --- 2. DISEÑO DE COLUMNAS ---
     col_mapa, col_stats = st.columns([2, 1])
 
     with col_mapa:
-        # Usamos las coordenadas de la memoria (session_state)
+        # Extraemos la ubicación actual de la memoria
         lat_actual = st.session_state.coords["lat"]
         lon_actual = st.session_state.coords["lng"]
         
+        # Crear Mapa Base
         m = folium.Map(location=[lat_actual, lon_actual], zoom_start=18, tiles='CartoDB positron')
-        folium.Marker([lat_actual, lon_actual], icon=folium.Icon(color='blue', icon='info-sign')).add_to(m)
+        folium.Marker([lat_actual, lon_actual], 
+                      popup="Punto de Análisis",
+                      icon=folium.Icon(color='blue', icon='info-sign')).add_to(m)
         
-        # Renderizamos el mapa
+        # Renderizado del mapa y captura de clics
         mapa_interactivo = st_folium(m, width="100%", height=500, key="selector_urbano")
 
-        # --- LÓGICA DE ACTUALIZACIÓN ---
-        # Solo actualizamos si el usuario realmente hizo clic en un lugar nuevo
+        # --- LÓGICA DE ACTUALIZACIÓN POR CLIC ---
         if mapa_interactivo.get("last_clicked"):
             click_lat = mapa_interactivo["last_clicked"]["lat"]
             click_lng = mapa_interactivo["last_clicked"]["lng"]
             
-            # Verificamos si el clic es diferente al que ya tenemos guardado
+            # Si el usuario picó en un lugar nuevo, actualizamos y reseteamos el ranking anterior
             if click_lat != st.session_state.coords["lat"]:
                 st.session_state.coords = {"lat": click_lat, "lng": click_lng}
-                st.rerun() # Forzamos recarga para mover el marcador azul
+                st.session_state.ranking_listo = False # Nueva ubicación requiere nuevo análisis
+                st.rerun() 
 
     with col_stats:
         st.subheader("📊 Análisis de Ubicación")
-        # Leemos siempre de la memoria segura
         curr_lat = st.session_state.coords["lat"]
         curr_lon = st.session_state.coords["lng"]
         
         st.write(f"**Latitud:** `{curr_lat:.6f}`")
         st.write(f"**Longitud:** `{curr_lon:.6f}`")
         
+        # --- BOTÓN DE DISPARO DE IA ---
         if st.button("🚀 Lanzar Recomendador de IA", type="primary", use_container_width=True):
             with st.spinner("Escaneando el Gemelo Digital..."):
-                # (Aquí sigue el resto de tu lógica de giros_evaluar que pusimos antes)
-                # ...
                 
-                # --- MOTOR DE RECOMENDACIÓN MULTI-GIRO ---
-                # Definimos los giros a evaluar (Puedes expandir esta lista)
+                # Definición de Giros SCIAN para la Tesis
                 giros_evaluar = {
                     "446110": "Farmacia con Consultorio",
                     "461110": "Abarrotes / Minisuper",
@@ -200,31 +250,34 @@ if sistema_listo:
 
                 resultados = []
                 
-                # Reutilizamos la lógica de inferencia para cada giro
+                # Ejecutamos la predicción para cada giro comercial
                 for cod, nom in giros_evaluar.items():
-                    # Calculamos el riesgo para este punto y este giro
-                    # (Nota: Asegúrate de que 'evaluar_local_comercial' esté disponible en tu Capa 2)
-                    # Usamos el frontage real calculado por la distancia a la calle
-                    probs, clase, vars_c = evaluar_local_comercial(lat, lon, cod, frontage_escenario=1) # 1 por defecto o calculado
+                    # Llamada a la función Maestra (asegúrate que esté definida en la Capa 2)
+                    probs, _, _ = evaluar_local_comercial(curr_lat, curr_lon, cod, frontage_escenario=1)
                     
                     resultados.append({
                         "Giro Comercial": nom,
                         "Prob. Éxito": round(probs[1] * 100, 1)
                     })
 
-                # Convertimos a DataFrame para mostrar el Ranking
-                df_res = pd.DataFrame(resultados).sort_values(by="Prob. Éxito", ascending=False)
+                # Guardamos resultados en el estado para que no se borren al refrescar
+                st.session_state.df_resultados = pd.DataFrame(resultados).sort_values(by="Prob. Éxito", ascending=False)
+                st.session_state.ranking_listo = True
 
-                st.markdown("---")
-                st.markdown("### 🏆 Ranking de Viabilidad")
-                
-                # Mostramos la tabla con un degradado de color (Estilo Tesis)
-                st.dataframe(
-                    df_res.style.background_gradient(cmap='RdYlGn', subset=['Prob. Éxito']),
-                    use_container_width=True,
-                    hide_index=True
-                )
+        # --- MOSTRAR RESULTADOS SI ESTÁN LISTOS ---
+        if st.session_state.ranking_listo:
+            st.markdown("---")
+            st.markdown("### 🏆 Ranking de Viabilidad")
+            
+            # Visualización con degradado de color
+            st.dataframe(
+                st.session_state.df_resultados.style.background_gradient(cmap='RdYlGn', subset=['Prob. Éxito']),
+                use_container_width=True,
+                hide_index=True
+            )
 
-                # Recomendación final
-                ganador = df_res.iloc[0]['Giro Comercial']
-                st.success(f"**Recomendación Maestra:** El predio es óptimo para un(a) **{ganador}**.")
+            # Proclama el Ganador
+            ganador = st.session_state.df_resultados.iloc[0]['Giro Comercial']
+            score = st.session_state.df_resultados.iloc[0]['Prob. Éxito']
+            
+            st.success(f"**Dictamen Final:** El giro con mayor potencial es **{ganador}** con un **{score}%** de viabilidad.")
