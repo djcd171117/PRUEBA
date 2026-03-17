@@ -135,48 +135,99 @@ def evaluar_local_comercial(lat, lon, giro_scian):
     p_geom = gpd.GeoSeries([Point(lon, lat)], crs="EPSG:4326").to_crs(crs_o).geometry[0]
     ctx_g = obtener_contexto_detallado_google(lat, lon)
     
-    # Atributos SIG
     masa = edif.clip(p_geom.buffer(50)).area.sum()
     dist_a, dist_e = ancl.distance(p_geom).min(), nod.distance(p_geom).min()
     idx_n = nod.distance(p_geom).idxmin()
     cent_v = nod.loc[idx_n, 'betweenness'] if 'betweenness' in nod.columns else 0.001
     
-    # Análisis de Escuelas
+    # =========================================================================
+    # 1. RADAR DE ANCLAS URBANAS (Desmenuzando el entorno)
+    # =========================================================================
     escuelas = ancl[ancl['amenity'].isin(['school', 'university'])]
-    dist_escuela = escuelas.distance(p_geom).min() if not escuelas.empty else 1000
+    hospitales = ancl[ancl['amenity'].isin(['hospital', 'clinic'])]
+    mercados = ancl[ancl['amenity'].isin(['marketplace', 'bus_station'])] # Mercados y terminales actúan similar
     
-    # Saturación
+    dist_escuela = escuelas.distance(p_geom).min() if not escuelas.empty else 1000
+    dist_hospital = hospitales.distance(p_geom).min() if not hospitales.empty else 1000
+    dist_mercado = mercados.distance(p_geom).min() if not mercados.empty else 1000
+    
+    cerca_escuela = dist_escuela < 150
+    cerca_hospital = dist_hospital < 150
+    cerca_mercado = dist_mercado < 150
+
+    # Saturación de Competencia Directa
     l_m_g = df_h[df_h['codigo_act'] == str(giro_scian)]
     dist_c, sat = (l_m_g.distance(p_geom).min(), len(l_m_g.clip(p_geom.buffer(300)))) if not l_m_g.empty else (800, 0)
     
-    tipo = clasificar_micro_entorno(p_geom, edif, df_h, ctx_g)
+    tipo = clasificar_micro_entorno(p_geom, edif, df_h, ctx_g, cerca_escuela)
     nse = ctx_g['nse_google'] if ctx_g['nse_google'] else ('Premium' if masa > 6000 else ('Medio' if masa > 1800 else 'Popular'))
-    
-    # PENALIZACIÓN POR ESCUELA (El Ojo del Experto)
-    if dist_escuela < 100 and nse == 'Premium':
-        nse = 'Medio' # Una secundaria degrada el valor comercial de ultra-lujo a nivel banqueta
-        if str(giro_scian).startswith('722511'): sat += 3 # Penaliza restaurantes gourmet
-        if str(giro_scian).startswith('461'): sat -= 1 # Favorece tiendas de conveniencia/papelerías
+    es_informal = True if (cent_v > 0.005 and nse == 'Popular') else False
+
+    # =========================================================================
+    # 2. JERARQUÍA DE FLUJO Y ANCLA DOMINANTE
+    # =========================================================================
+    patron_flujo = ctx_g['patron_flujo']
+    dias_pico = "Sábados y Domingos"
+    ancla_dominante = "Ninguna (Flujo Orgánico)"
+    mult_ancla = 1.0 # Multiplicador específico por ancla y giro
+
+    # Regla 1: Hospitales dominan por su flujo 24/7 y necesidades urgentes
+    if cerca_hospital:
+        ancla_dominante = "Hospital / Centro de Salud"
+        patron_flujo = "Flujo Constante (Salud/Urgencias)"
+        dias_pico = "Lunes a Domingo (24/7)"
+        if giro_scian == '446110': mult_ancla = 2.2 # Farmacias explotan aquí
+        if giro_scian == '722518': mult_ancla = 1.5 # Cocina económica para familiares/staff
+        if giro_scian in ['812110', '611110', '722511']: mult_ancla = 0.4 # Spas, Academias y Gourmet mueren aquí
         
+    # Regla 2: Mercados y Terminales generan flujo masivo pero transitorio/informal
+    elif cerca_mercado:
+        ancla_dominante = "Mercado / Nodo de Transporte"
+        nse = 'Popular' if nse == 'Premium' else nse # Degrada lujo a nivel calle
+        es_informal = True
+        if giro_scian == '461110': mult_ancla = 1.8 # Mini-super (Compras de paso)
+        if giro_scian == '722518': mult_ancla = 1.4 # Fondas
+        if giro_scian in ['812110', '722511']: mult_ancla = 0.3 # Adiós lujo
+        
+    # Regla 3: Escuelas generan picos muy marcados
+    elif cerca_escuela:
+        ancla_dominante = "Centro Educativo"
+        nse = 'Medio' if nse == 'Premium' else nse
+        patron_flujo = "Escolar / Estudiantil"
+        dias_pico = "Lunes a Viernes (Matutino/Vespertino)"
+        if giro_scian in ['461110', '722518']: mult_ancla = 1.6 # Papelerías(si hubiera)/Snacks/Fondas
+        if giro_scian == '611110': mult_ancla = 1.5 # Academias de regularización/idiomas
+        if str(giro_scian).startswith('722511'): mult_ancla = 0.3 # Gourmet
+        
+    # Regla 4: Oficinas (Detectadas por Google, no por OSM)
+    elif patron_flujo == "Corporativo (Lun-Vie)":
+        ancla_dominante = "Zona Corporativa"
+        dias_pico = "Lunes a Viernes"
+        if giro_scian in ['722518', '461110']: mult_ancla = 1.6 # Comida oficinistas
+        if giro_scian == '611110': mult_ancla = 0.5 # Academias sufren en zonas puramente de oficinas
+
+    elif patron_flujo == "Vida Nocturna / Gastronómico":
+        dias_pico = "Jueves a Sábado (Noche)"
+        if giro_scian in ['722511']: mult_ancla = 1.5
+
+    # --- PREDICCIÓN IA BASE ---
     df_cl = pd.DataFrame([[dist_c, masa, dist_a, dist_e]], columns=c_f)
     tribu = f"Perfil_{mod_k.predict(esc.transform(df_cl))[0]}"
     X = pd.DataFrame([{'codigo_act': str(giro_scian), 'dist_competidor_m': dist_c, 'm2_construccion_50m': masa, 'dist_ancla_urbana_m': dist_a, 'dist_esquina_m': dist_e, 'tipologia_urbana': tribu, 'centralidad_flujo': cent_v, 'segmento_nse': nse}])
     p_base = mod_c.predict_proba(X)[0][1]
     
-    v_temp, d_pico = 1.0, "Sábados y Domingos"
-    if ctx_g['patron_flujo'] == "Corporativo (Lun-Vie)":
-        d_pico = "Lunes a Viernes"
-        if giro_scian in ['722518', '461110']: v_temp = 1.6
-    elif ctx_g['patron_flujo'] == "Vida Nocturna / Gastronómico":
-        d_pico = "Jueves a Sábado (Noche)"
-        if giro_scian in ['722511', '812110']: v_temp = 1.4
-        
-    p_ex = min(max(p_base * v_temp * (0.6 if sat > 3 else 1.0), 0.05), 0.96)
+    # --- FRICCIÓN DE INFORMALIDAD Y SATURACIÓN ---
+    if es_informal and giro_scian == '461110': mult_ancla *= 0.65 # Mini-Super formal pierde contra tianguis
+    penalizacion_sat = (0.75 ** sat) if sat > 0 else 1.15 # Océano Rojo vs Océano Azul
+
+    # Cálculo Final
+    p_ex = p_base * mult_ancla * penalizacion_sat
+    p_ex = min(max(p_ex, 0.05), 0.96) 
     
     ctx = {
-        'tipo_predio': tipo, 'segmento_nse': nse, 'patron_flujo': ctx_g['patron_flujo'], 
-        'dias_pico': d_pico, 'masa_critica': masa, 'potencial_renta': "Alto" if v_temp > 1.3 else "Moderado", 
-        'conectividad': "Alta" if cent_v > 0.006 else "Local", 'cerca_escuela': dist_escuela < 100
+        'tipo_predio': tipo, 'segmento_nse': nse, 'patron_flujo': patron_flujo, 
+        'dias_pico': dias_pico, 'masa_critica': masa, 'potencial_renta': "Alto" if mult_ancla > 1.3 else "Moderado", 
+        'conectividad': "Alta" if cent_v > 0.006 else "Local", 'ancla_dominante': ancla_dominante, 'es_informal': es_informal
     }
     return [1-p_ex, p_ex], ctx, X.iloc[0]
 
@@ -251,10 +302,14 @@ if st.session_state.analisis:
         st.subheader(f"NSE Deducido: {info['segmento_nse']}")
         st.info("Escolaridad: " + ("Superior" if info['segmento_nse'] == "Premium" else "Media"))
         if info.get('cerca_escuela'): st.warning("🏫 Centro Educativo a <100m. Impacto en flujos comerciales segmentados.")
-    with t3:
-        st.metric("Días de Mayor Flujo", info.get('dias_pico', "N/A"))
-        st.metric("Potencial de Renta", info.get('potencial_renta', "Moderado"))
-        st.write(f"Patrón Dominante: {info['patron_flujo']}")
+   with t3:
+        st.metric("Ancla Urbana Dominante", info.get('ancla_dominante', "Ninguna")) # <-- ¡NUEVO!
+        c_f1, c_f2 = st.columns(2)
+        with c_f1:
+            st.metric("Días de Mayor Flujo", info.get('dias_pico', "N/A"))
+        with c_f2:
+            st.metric("Potencial de Renta", info.get('potencial_renta', "Moderado"))
+        st.write(f"**Patrón Dominante:** {info['patron_flujo']}")
     with t4:
         st.dataframe(st.session_state.df_res, use_container_width=True, hide_index=True)
         st.bar_chart(st.session_state.df_res.set_index("Giro"))
