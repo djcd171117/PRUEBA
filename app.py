@@ -210,12 +210,11 @@ with st.spinner("⏳ Cargando Gemelo Digital y Entrenando IA (Esto tomará unos 
         sistema_listo = False
 
 # ==============================================================================
-# CAPA 4: FRONT-END "REPORTES POR ETAPAS" (Estilo QGIS/Geomarketing)
+# CAPA 4: FRONT-END "REPORTEADOR" (CORREGIDO)
 # ==============================================================================
 if sistema_listo:
     st.title("🎯 Sistema de Inteligencia Territorial")
     
-    # 1. GESTIÓN DE ESTADO (PERSISTENCIA)
     if 'coords' not in st.session_state:
         st.session_state.coords = {"lat": 20.605192, "lng": -100.382373}
     if 'analisis_listo' not in st.session_state:
@@ -224,45 +223,50 @@ if sistema_listo:
     col_mapa, col_stats = st.columns([2, 1])
 
     with col_mapa:
-        # Mapa Interactivo de Selección
         lat_actual, lon_actual = st.session_state.coords["lat"], st.session_state.coords["lng"]
         m = folium.Map(location=[lat_actual, lon_actual], zoom_start=18, tiles='CartoDB positron')
         folium.Marker([lat_actual, lon_actual], icon=folium.Icon(color='purple', icon='star')).add_to(m)
         mapa_interactivo = st_folium(m, width="100%", height=550, key="selector_urbano")
 
         if mapa_interactivo.get("last_clicked"):
-            click_lat, click_lng = mapa_interactivo["last_clicked"]["lat"], mapa_interactivo["last_clicked"]["lng"]
+            click_lat = mapa_interactivo["last_clicked"]["lat"]
+            click_lng = mapa_interactivo["last_clicked"]["lng"]
             if click_lat != st.session_state.coords["lat"]:
                 st.session_state.coords = {"lat": click_lat, "lng": click_lng}
-                st.session_state.analisis_listo = False # Resetear reporte al cambiar ubicación
+                st.session_state.analisis_listo = False 
                 st.rerun() 
 
     with col_stats:
         st.subheader("🧐 Centro de Diagnóstico")
-        curr_lat, curr_lon = st.session_state.coords["lat"], st.session_state.coords["lng"]
+        # Definimos las variables CLAVE aquí para que todo el bloque las vea
+        curr_lat = st.session_state.coords["lat"]
+        curr_lon = st.session_state.coords["lng"]
         
-        # Botón Maestro para generar todas las etapas
+        st.write(f"**Latitud:** `{curr_lat:.6f}`")
+        st.write(f"**Longitud:** `{curr_lon:.6f}`")
+        
         if st.button("🚀 Ejecutar Estudio Completo", type="primary", use_container_width=True):
             with st.spinner("Procesando capas de información..."):
-                # Lista de giros a evaluar
                 giros_reporte = {
                     "722511": "Restaurante Gourmet", "611110": "Centro Educativo",
                     "446110": "Farmacia", "812110": "Salón de Belleza",
                     "461110": "Abarrotes/Mini-Super", "722518": "Cocina Económica"
                 }
                 
-                # Ejecutamos inferencia y guardamos en session_state
                 resultados = []
                 for cod, nom in giros_reporte.items():
+                    # CAMBIO CRÍTICO: Usamos curr_lat y curr_lon que definimos arriba
                     probs, informal, vars_c = evaluar_local_comercial(curr_lat, curr_lon, cod)
                     resultados.append({"Giro": nom, "Viabilidad (%)": round(probs[1] * 100, 1)})
                 
-                # Guardamos variables de la última corrida para los reportes
                 st.session_state.df_resultados = pd.DataFrame(resultados).sort_values(by="Viabilidad (%)", ascending=False)
-                st.session_state.contexto = {"informal": informal, "nse": vars_c['segmento_nse'], "masa": vars_c['m2_construccion_50m']}
+                st.session_state.contexto = {
+                    "informal": informal, 
+                    "nse": vars_c['segmento_nse'], 
+                    "masa": vars_c['m2_construccion_50m']
+                }
                 st.session_state.analisis_listo = True
 
-        # --- MOSTRAR REPORTE POR ETAPAS (Tabs como en tu imagen) ---
         if st.session_state.analisis_listo:
             st.markdown("---")
             tab1, tab2, tab3 = st.tabs(["🏗️ Morfología", "👥 Social/NSE", "📋 Dictamen"])
@@ -270,25 +274,21 @@ if sistema_listo:
             with tab1:
                 st.write("**Etapa 1: Infraestructura**")
                 st.metric("Masa Crítica (50m)", f"{st.session_state.contexto['masa']:.0f} m²")
-                st.info(f"Análisis morfológico basado en {len(edificios_fusionados)} registros de edificios.")
+                
+                # Gráfico rápido de barras para el reporte
+                st.bar_chart(st.session_state.df_resultados.set_index("Giro"))
 
             with tab2:
                 st.write("**Etapa 2: Segmentación**")
                 nse = st.session_state.contexto['nse']
-                st.subheader(f"Perfil: {nse}")
+                st.subheader(f"Perfil Detectado: {nse}")
                 if st.session_state.contexto['informal']:
-                    st.warning("Detectada fricción por comercio informal itinerante.")
+                    st.warning("⚠️ Zona de alta fricción (Comercio Informal)")
 
             with tab3:
-                st.write("**Etapa 3: Resultados**")
+                st.write("**Etapa 3: Resultados finales**")
                 st.dataframe(st.session_state.df_resultados, use_container_width=True, hide_index=True)
                 
-                # BOTÓN DE DESCARGA (El "Reporte impreso")
                 csv = st.session_state.df_resultados.to_csv(index=False).encode('utf-8-sig')
-                st.download_button(
-                    label="📥 Descargar Reporte Ejecutivo",
-                    data=csv,
-                    file_name=f"estudio_geomarketing_{curr_lat:.4f}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )True)
+                st.download_button("📥 Descargar Reporte CSV", data=csv, 
+                                 file_name=f"estudio_{curr_lat:.4f}.csv", mime="text/csv")
