@@ -209,11 +209,12 @@ if 'data_cargada' not in st.session_state:
 sistema_listo = True
 
 # ==============================================================================
-# CAPA 4: FRONT-END (VERSIÓN FINAL ANTI-DUPLICADOS)
+# CAPA 4: FRONT-END "REPORTEADOR PRO" (VERSIÓN ANTI-DUPLICADOS)
 # ==============================================================================
 if sistema_listo:
     st.title("🎯 Oráculo Urbano: Inteligencia Territorial")
     
+    # Inicialización de estados
     if 'coords' not in st.session_state: 
         st.session_state.coords = {"lat": 20.605192, "lng": -100.382373}
     if 'analisis_listo' not in st.session_state: 
@@ -225,7 +226,9 @@ if sistema_listo:
         lat_a, lon_a = st.session_state.coords["lat"], st.session_state.coords["lng"]
         m = folium.Map(location=[lat_a, lon_a], zoom_start=18, tiles='CartoDB positron')
         folium.Marker([lat_a, lon_a], icon=folium.Icon(color='purple', icon='star')).add_to(m)
-        mapa_i = st_folium(m, width="100%", height=550, key="mapa_selector_unico")
+        
+        # Mapa con llave única
+        mapa_i = st_folium(m, width="100%", height=550, key="mapa_final_tesis")
         
         if mapa_i.get("last_clicked"):
             c_lat, c_lng = mapa_i["last_clicked"]["lat"], mapa_i["last_clicked"]["lng"]
@@ -238,40 +241,52 @@ if sistema_listo:
         st.subheader("🧐 Centro de Diagnóstico")
         curr_lat, curr_lon = st.session_state.coords["lat"], st.session_state.coords["lng"]
         
-        # AGREGAMOS KEY ÚNICA AQUÍ
-        if st.button("🚀 Ejecutar Estudio Completo", type="primary", use_container_width=True, key="main_process_btn"):
-            with st.spinner("Analizando micro-morfología..."):
-                giros = {"722511": "Restaurante Gourmet", "611110": "Academia", "446110": "Farmacia", "812110": "Spa/Belleza", "461110": "Mini-Super", "722518": "Cocina Económica"}
-                res = []
-                for cod, nom in giros.items():
-                    probs, contexto, vars_sim = evaluar_local_comercial(curr_lat, curr_lon, cod)
-                    res.append({"Giro": nom, "Viabilidad (%)": round(probs[1] * 100, 1)})
+        st.write(f"**Latitud:** `{curr_lat:.6f}`")
+        st.write(f"**Longitud:** `{curr_lon:.6f}`")
+        
+        # BOTÓN CON LLAVE ÚNICA (Previene el DuplicateElementId)
+        if st.button("🚀 Ejecutar Estudio Completo", type="primary", use_container_width=True, key="btn_ejecutar_estudio_unico"):
+            with st.spinner("Procesando capas de información..."):
+                giros_reporte = {
+                    "722511": "Restaurante Gourmet", "611110": "Centro Educativo",
+                    "446110": "Farmacia", "812110": "Salón de Belleza",
+                    "461110": "Abarrotes/Mini-Super", "722518": "Cocina Económica"
+                }
                 
-                st.session_state.df_resultados = pd.DataFrame(res).sort_values(by="Viabilidad (%)", ascending=False)
+                resultados = []
+                for cod, nom in giros_reporte.items():
+                    probs, contexto, vars_c = evaluar_local_comercial(curr_lat, curr_lon, cod)
+                    resultados.append({"Giro": nom, "Viabilidad (%)": round(probs[1] * 100, 1)})
+                
+                st.session_state.df_resultados = pd.DataFrame(resultados).sort_values(by="Viabilidad (%)", ascending=False)
                 st.session_state.contexto_predio = contexto
                 st.session_state.analisis_listo = True
                 st.rerun()
 
+        # Renderizado de resultados
         if st.session_state.analisis_listo and 'contexto_predio' in st.session_state:
             st.markdown("---")
-            t1, t2, t3 = st.tabs(["🏗️ Morfología", "👥 Segmentación", "📋 Dictamen"])
+            # Tabs con llave única
+            t1, t2, t3 = st.tabs(["🏗️ Morfología", "👥 Social/NSE", "📋 Dictamen"])
             ctx = st.session_state.contexto_predio
             
             with t1:
                 st.metric("Tipo de Predio", ctx['tipo_predio'])
                 st.metric("Masa Crítica", f"{ctx['masa_critica']:.0f} m²")
                 st.write(f"**Trama Urbana:** {ctx['conectividad']}")
-                
+            
             with t2:
                 st.subheader(f"NSE Deducido: {ctx['segmento_nse']}")
-                if ctx['es_informal']: st.warning("⚠️ Zona de Mercado Informal Detectada")
+                if ctx['es_informal']: 
+                    st.warning("⚠️ Zona de Mercado Informal Detectada")
             
             with t3:
                 st.dataframe(st.session_state.df_resultados, use_container_width=True, hide_index=True)
-                st.bar_chart(st.session_state.df_resultados.set_index("Giro"))
                 
                 csv = st.session_state.df_resultados.to_csv(index=False).encode('utf-8-sig')
-                # KEY ÚNICA PARA DESCARGA
-                st.download_button("📥 Descargar Reporte CSV", data=csv, file_name=f"estudio_{curr_lat:.4f}.csv", mime="text/csv", key="download_report_btn")
+                # Botón de descarga con llave única
+                st.download_button("📥 Descargar Reporte CSV", data=csv, 
+                                 file_name=f"estudio_{curr_lat:.4f}.csv", mime="text/csv", 
+                                 key="btn_descarga_csv_unico")
         else:
-            st.info("Selecciona un punto y presiona el botón para iniciar.")
+            st.info("Haz clic en el mapa y presiona el botón para iniciar el análisis.")
