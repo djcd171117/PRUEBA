@@ -20,9 +20,17 @@ st.set_page_config(page_title="Oráculo Urbano PropTech", layout="wide")
 # ==============================================================================
 # LLAVES DE API (INTEGRADAS)
 # ==============================================================================
-GEMINI_KEY = "AIzaSyCCPZ8Fzb-bTKfxOk4oL-idreNjPjgsDuk"
-G_MAPS_KEY = "AIzaSyDbysfcLFSNOruYHHaQgGhbqtBllqdtlY0"
-
+# Extraemos las llaves de la "caja fuerte" de Streamlit
+try:
+    MAPS_KEY = st.secrets["G_MAPS_KEY"]
+    GEMINI_KEY = st.secrets["GEMINI_KEY"]
+    
+    # Inicializamos los clientes con las llaves protegidas
+    G_CLIENT = googlemaps.Client(key=MAPS_KEY)
+    gemini_client = genai.Client(api_key=GEMINI_KEY)
+except Exception as e:
+    st.error("⚠️ Error: No se encontraron las llaves en los Secrets de Streamlit.")
+    st.stop()
 
 
 # Inicialización de clientes
