@@ -175,7 +175,7 @@ def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
     idx_nodo = nodos.distance(p_geom).idxmin()
     centralidad_val = nodos.loc[idx_nodo, 'betweenness'] if 'betweenness' in nodos.columns else 0.001
     
-    # 4. Saturación por Giro (Evita resultados planos)
+    # 4. Saturación por Giro (Varianza)
     locales_mismo_giro = df_hist[df_hist['codigo_act'] == str(giro_scian)]
     if not locales_mismo_giro.empty:
         dist_comp = locales_mismo_giro.distance(p_geom).min()
@@ -199,38 +199,38 @@ def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
     
     prob_base = modelo_cat.predict_proba(X_sim)[0][1]
     
-    # 7. MATRIZ DE VALORIZACIÓN TEMPORAL Y AFINIDAD
+    # 7. VALORIZACIÓN TEMPORAL
     valor_temporal = 1.0
     dias_pico = "Sábados y Domingos"
     
     if ctx_g['patron_flujo'] == "Corporativo (Lun-Vie)":
         dias_pico = "Lunes a Viernes"
-        if giro_scian in ['722518', '461110']: valor_temporal = 1.6 # Gran valor para comida/super en oficinas
-            
+        if giro_scian in ['722518', '461110']: valor_temporal = 1.6
     elif ctx_g['patron_flujo'] == "Vida Nocturna / Gastronómico":
         dias_pico = "Jueves a Sábado (Noche)"
         if giro_scian in ['722511', '812110']: valor_temporal = 1.4
 
-    # Ajustes finales de probabilidad
     prob_exito = prob_base * valor_temporal
-    if saturacion > 3: prob_exito *= 0.6 # Castigo por canibalización directa
-    if "Plaza" in tipo_predio and str(giro_scian).startswith(('812', '621')): prob_exito *= 1.3
+    if saturacion > 3: prob_exito *= 0.6
     
     prob_exito = min(max(prob_exito, 0.05), 0.96)
     
-   contexto = {
-    'tipo_predio': tipo_predio, 
-    'segmento_nse': seg_nse,
-    'patron_flujo': ctx_g['patron_flujo'], # <-- Vital
-    'dias_pico': dias_pico,              # <-- Esta es la que falta
-    'masa_critica': masa_critica,
-    'potencial_renta': "Alto" if valor_temporal > 1.3 else "Moderado",
-    'conectividad': "Flujo Alto" if centralidad_val > 0.006 else "Local"
-}
+    # DICCIONARIO CORREGIDO (Sin errores de llaves)
+    contexto = {
+        'tipo_predio': tipo_predio, 
+        'segmento_nse': seg_nse,
+        'patron_flujo': ctx_g['patron_flujo'],
+        'dias_pico': dias_pico,
+        'masa_critica': masa_critica,
+        'potencial_renta': "Alto" if valor_temporal > 1.3 else "Moderado",
+        'conectividad': "Flujo Alto" if centralidad_val > 0.006 else "Local",
+        'es_informal': (centralidad_val > 0.008 and masa_critica < 2000)
+    }
     
     return [1-prob_exito, prob_exito], contexto, X_sim.iloc[0]
+
 # ==============================================================================
-# CAPA 3: INICIALIZACIÓN (SISTEMA)
+# CAPA 3: INICIALIZACIÓN
 # ==============================================================================
 if 'data_cargada' not in st.session_state:
     with st.spinner("⏳ Iniciando Gemelo Digital de Querétaro..."):
@@ -244,140 +244,65 @@ if 'data_cargada' not in st.session_state:
             'data_cargada': True
         })
 
-sistema_listo = True
-
 # ==============================================================================
-# CAPA 4: INTERFAZ DE USUARIO (VERSIÓN PRO FINAL - ENRIQUECIDA CON VALORIZACIÓN)
+# CAPA 4: INTERFAZ DE USUARIO (REPORTE COMPLETO)
 # ==============================================================================
-if sistema_listo:
-    st.title("🎯 Oráculo Urbano: Inteligencia Territorial")
-    st.markdown("### Sistema de Dictamen de Viabilidad y Valorización de Activos")
+st.title("🎯 Oráculo Urbano: Inteligencia Territorial")
+st.markdown("### Sistema de Dictamen de Viabilidad y Valorización")
+
+if 'c_lat_tesis' not in st.session_state: st.session_state.c_lat_tesis = 20.605192
+if 'c_lng_tesis' not in st.session_state: st.session_state.c_lng_tesis = -100.382373
+if 'status_analisis' not in st.session_state: st.session_state.status_analisis = False
+
+col_izq, col_der = st.columns([2, 1])
+
+with col_izq:
+    lat_a, lon_a = st.session_state.c_lat_tesis, st.session_state.c_lng_tesis
+    m_tesis = folium.Map(location=[lat_a, lon_a], zoom_start=18, tiles='CartoDB positron')
+    folium.Marker([lat_a, lon_a], icon=folium.Icon(color='purple', icon='star')).add_to(m_tesis)
+    folium.Circle([lat_a, lon_a], radius=50, color='blue', fill=True, opacity=0.2).add_to(m_tesis)
+    mapa_dictamen = st_folium(m_tesis, width="100%", height=550, key=f"mapa_geo_{lat_a}")
     
-    # 1. GESTIÓN DE ESTADO
-    if 'c_lat_tesis' not in st.session_state: 
-        st.session_state.c_lat_tesis = 20.605192
-    if 'c_lng_tesis' not in st.session_state: 
-        st.session_state.c_lng_tesis = -100.382373
-    if 'status_analisis' not in st.session_state: 
-        st.session_state.status_analisis = False
+    if mapa_dictamen.get("last_clicked"):
+        n_lat, n_lng = mapa_dictamen["last_clicked"]["lat"], mapa_dictamen["last_clicked"]["lng"]
+        if n_lat != st.session_state.c_lat_tesis:
+            st.session_state.c_lat_tesis, st.session_state.c_lng_tesis = n_lat, n_lng
+            st.session_state.status_analisis = False
+            st.rerun()
 
-    # 2. LAYOUT (Mapa | Diagnóstico)
-    col_izq, col_der = st.columns([2, 1])
+with col_der:
+    st.subheader("🧐 Centro de Diagnóstico")
+    st.code(f"LAT: {st.session_state.c_lat_tesis:.6f}\nLNG: {st.session_state.c_lng_tesis:.6f}")
     
-    with col_izq:
-        lat_a, lon_a = st.session_state.c_lat_tesis, st.session_state.c_lng_tesis
-        m_tesis = folium.Map(location=[lat_a, lon_a], zoom_start=18, tiles='CartoDB positron')
-        folium.Marker([lat_a, lon_a], icon=folium.Icon(color='purple', icon='star')).add_to(m_tesis)
-        
-        # Círculos de influencia para visualización de polígonos de impacto
-        folium.Circle([lat_a, lon_a], radius=50, color='blue', fill=True, opacity=0.2).add_to(m_tesis)
-        folium.Circle([lat_a, lon_a], radius=300, color='gray', fill=False, dash_array='5, 5').add_to(m_tesis)
-        
-        mapa_dictamen = st_folium(m_tesis, width="100%", height=550, key=f"mapa_geo_{lat_a}")
-        
-        if mapa_dictamen.get("last_clicked"):
-            n_lat, n_lng = mapa_dictamen["last_clicked"]["lat"], mapa_dictamen["last_clicked"]["lng"]
-            if n_lat != st.session_state.c_lat_tesis:
-                st.session_state.c_lat_tesis, st.session_state.c_lng_tesis = n_lat, n_lng
-                st.session_state.status_analisis = False
-                st.rerun()
+    if st.button("🔍 GENERAR DICTAMEN DE SITIO", type="primary", use_container_width=True, key=f"btn_run_{st.session_state.c_lat_tesis}"):
+        with st.spinner("Ejecutando motores de IA y Flujo Temporal..."):
+            giros = {"722511": "Restaurante Gourmet", "611110": "Academia", "446110": "Farmacia", "812110": "Spa / Belleza", "461110": "Mini-Super", "722518": "Cocina Económica"}
+            res = []
+            for cod, nom in giros.items():
+                p, c, _ = evaluar_local_comercial(st.session_state.c_lat_tesis, st.session_state.c_lng_tesis, cod)
+                res.append({"Giro": nom, "Viabilidad (%)": round(p[1] * 100, 1)})
+            st.session_state.df_final = pd.DataFrame(res).sort_values(by="Viabilidad (%)", ascending=False)
+            st.session_state.ctx_final = c
+            st.session_state.status_analisis = True
+            st.rerun()
 
-    with col_der:
-        st.subheader("🧐 Centro de Diagnóstico")
-        st.write(f"**Coordenadas de Análisis:**")
-        st.code(f"LAT: {st.session_state.c_lat_tesis:.6f}\nLNG: {st.session_state.c_lng_tesis:.6f}")
-        
-        key_boton = f"btn_run_{st.session_state.c_lat_tesis}"
-        if st.button("🔍 GENERAR DICTAMEN DE SITIO", type="primary", use_container_width=True, key=key_boton):
-            with st.spinner("Ejecutando motores de IA, Flujo Temporal y Morfología..."):
-                giros_final = {
-                    "722511": "Restaurante Gourmet", "611110": "Academia / Educación",
-                    "446110": "Farmacia", "812110": "Spa / Belleza",
-                    "461110": "Mini-Super / Conveniencia", "722518": "Cocina Económica"
-                }
-                
-                res_estudio = []
-                for cod, nom in giros_final.items():
-                    p, c, _ = evaluar_local_comercial(st.session_state.c_lat_tesis, st.session_state.c_lng_tesis, cod)
-                    res_estudio.append({"Giro": nom, "Viabilidad (%)": round(p[1] * 100, 1)})
-                
-                st.session_state.df_final = pd.DataFrame(res_estudio).sort_values(by="Viabilidad (%)", ascending=False)
-                st.session_state.ctx_final = c
-                st.session_state.status_analisis = True
-                st.rerun()
-
-    # 3. REPORTE MULTIDIMENSIONAL
-    if st.session_state.status_analisis and 'ctx_final' in st.session_state:
-        st.markdown("---")
-        # Cuatro etapas de análisis para rigor académico
-        t1, t2, t3, t4 = st.tabs(["🏗️ 1: Morfología", "👥 2: Demografía", "⏳ 3: Flujo Temporal", "📋 4: Dictamen"])
-        
-        info = st.session_state.ctx_final
-        
-        with t1:
-            st.write("### Análisis de Infraestructura")
-            c1, c2 = st.columns(2)
-            c1.metric("Clasificación de Suelo", info['tipo_predio'])
-            c2.metric("Masa Crítica (50m)", f"{info['masa_critica']:.0f} m²")
-            st.write(f"**Accesibilidad de Trama:** {info['conectividad']}")
-            
-        with t2:
-            st.write("### Perfil Socioeconómico e Inferencia de Vivienda")
-            st.subheader(f"NSE Detectado: **{info['segmento_nse']}**")
-            
-            c_dem1, c_dem2, c_dem3 = st.columns(3)
-            with c_dem1:
-                st.write("**Escolaridad Predominante**")
-                # Inferencia lógica para el reporte
-                val_esc = "Superior / Posgrado" if info['segmento_nse'] == "Premium" else "Media Superior"
-                st.info(val_esc)
-            with c_dem2:
-                st.write("**Densidad de Vivienda**")
-                val_viv = "Vertical / Alta" if info['masa_critica'] > 4500 else "Horizontal / Media"
-                st.info(val_viv)
-            with c_dem3:
-                st.write("**Rango de Edad (Target)**")
-                st.info("25 - 45 años (Eco. Activa)")
-
-        with t3:
-            st.write("### Dinámica de Flujo y Valorización Temporal")
-            c_f1, c_f2 = st.columns(2)
-            with c_f1:
-                st.metric("Días de Mayor Valor", info['dias_pico'])
-            with c_f2:
-                st.metric("Potencial de Renta", info['potencial_renta'])
-            
-            st.write(f"**Patrón de Concurrencia:** {info['patron_flujo']}")
-            st.caption("Valorización basada en el cruce de Popular Times y tipología de negocios circundantes.")
-
-        with t4:
-            st.write("### Ranking de Oportunidad de Negocio")
-            st.dataframe(st.session_state.df_final, use_container_width=True, hide_index=True)
-            st.bar_chart(st.session_state.df_final.set_index("Giro"))
-            
-            # --- SISTEMA DE REPORTE EJECUTIVO (CSV ENRIQUECIDO) ---
-            # Creamos un resumen del entorno para que el CSV no sea solo una tabla plana
-            resumen_data = [
-                {"Parámetro": "Uso de Suelo", "Detalle": info['tipo_predio']},
-                {"Parámetro": "NSE", "Detalle": info['segmento_nse']},
-                {"Parámetro": "Días Pico", "Detalle": info['dias_pico']},
-                {"Parámetro": "Patrón de Flujo", "Detalle": info['patron_flujo']},
-                {"Parámetro": "Potencial Renta", "Detalle": info['potencial_renta']},
-                {"Parámetro": "---", "Detalle": "---"}
-            ]
-            df_resumen = pd.DataFrame(resumen_data)
-            
-            # Unimos metadatos con el ranking
-            csv_export = pd.concat([df_resumen, st.session_state.df_final.rename(columns={"Giro": "Parámetro", "Viabilidad (%)": "Detalle"})])
-            csv_final = csv_export.to_csv(index=False).encode('utf-8-sig')
-            
-            st.download_button(
-                label="📥 Descargar Dictamen Técnico (CSV Enriquecido)", 
-                data=csv_final, 
-                file_name=f"Dictamen_V4_{st.session_state.c_lat_tesis:.4f}.csv", 
-                mime="text/csv", 
-                key=f"dl_btn_{st.session_state.c_lat_tesis}",
-                use_container_width=True
-            )
-    else:
-        st.info("📍 Selecciona un punto en el mapa y presiona el botón para iniciar el estudio.")
+if st.session_state.status_analisis and 'ctx_final' in st.session_state:
+    st.markdown("---")
+    t1, t2, t3, t4 = st.tabs(["🏗️ Morfología", "👥 Demografía", "⏳ Flujo Temporal", "📋 Dictamen"])
+    info = st.session_state.ctx_final
+    
+    with t1:
+        st.metric("Suelo", info['tipo_predio'])
+        st.metric("Masa Crítica", f"{info['masa_critica']:.0f} m²")
+    with t2:
+        st.subheader(f"NSE: {info['segmento_nse']}")
+        st.info("Escolaridad: " + ("Superior" if info['segmento_nse'] == "Premium" else "Media"))
+    with t3:
+        st.metric("Días Pico", info.get('dias_pico', "N/A"))
+        st.metric("Renta", info.get('potencial_renta', "Moderado"))
+        st.write(f"Patrón: {info['patron_flujo']}")
+    with t4:
+        st.dataframe(st.session_state.df_final, use_container_width=True, hide_index=True)
+        st.bar_chart(st.session_state.df_final.set_index("Giro"))
+        csv_final = st.session_state.df_final.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 Descargar Reporte Enriquecido", data=csv_final, file_name=f"Dictamen_{st.session_state.c_lat_tesis:.4f}.csv", mime="text/csv")
