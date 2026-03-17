@@ -33,23 +33,18 @@ RUTA_ACTUAL = "denue_inegi_22_.csv"     # Tu DENUE del presente
 @st.cache_resource
 def cargar_entorno_base(bbox):
     """Descarga y proyecta las capas base de la ciudad."""
-    # Calles y Red Vial
     G = ox.graph_from_bbox(bbox=bbox, network_type='walk', simplify=True)
     G_proj = ox.project_graph(G)
     crs_objetivo = G_proj.graph['crs']
     
-    # Edificios OSM (Arquitectura base)
     osm = ox.features_from_bbox(bbox=bbox, tags={'building': True}).to_crs(crs_objetivo)
     
-    # Edificios IA (Overture - Densidad oculta)
     tabla_ia = overturemaps.record_batch_reader("building", bbox).read_all().to_pandas()
     tabla_ia["geometry"] = tabla_ia["geometry"].apply(wkb.loads)
     ia = gpd.GeoDataFrame(tabla_ia, geometry="geometry", crs="EPSG:4326").to_crs(crs_objetivo)
     
-    # Fusión Morfológica (Masa Crítica)
     edificios_fusionados = gpd.GeoDataFrame(pd.concat([osm[['geometry']], ia[['geometry']]], ignore_index=True), crs=crs_objetivo)
     
-    # Anclas (Imanes Peatonales) e Intersecciones
     anclas = ox.features_from_bbox(bbox=bbox, tags={'amenity': ['school', 'university', 'hospital', 'clinic', 'marketplace', 'bus_station']}).to_crs(crs_objetivo)
     nodos_gdf, aristas_gdf = ox.graph_to_gdfs(G_proj)
     aristas_gdf['highway_clean'] = aristas_gdf['highway'].apply(lambda x: x[0] if isinstance(x, list) else x)
@@ -58,19 +53,16 @@ def cargar_entorno_base(bbox):
 
 @st.cache_data
 def preparar_datos_historicos(ruta_hist, bbox, _crs_objetivo, _edificios, _G_proj, _nodos, _aristas):
-    """Procesa el pasado inyectando inteligencia de segmentación y centralidad."""
     df_hist = pd.read_csv(ruta_hist, encoding='latin-1', low_memory=False)
     gdf_hist = gpd.GeoDataFrame(df_hist, geometry=gpd.points_from_xy(df_hist['longitud'], df_hist['latitud']), crs="EPSG:4326").cx[bbox[0]:bbox[2], bbox[1]:bbox[3]].to_crs(_crs_objetivo)
     gdf_hist['codigo_act'] = gdf_hist['codigo_act'].astype(str)
     gdf_hist = gdf_hist[gdf_hist['codigo_act'].str.startswith(('44', '46', '72', '81'))].copy()
     
-    # Asignación de supervivencia (Ajustar según Bloque 12 real)
     gdf_hist['sobrevivio'] = np.random.choice([1, 0], size=len(gdf_hist), p=[0.7, 0.3])
     
     coords = np.array(list(zip(gdf_hist.geometry.x, gdf_hist.geometry.y)))
     gdf_hist['dist_competidor_m'] = cKDTree(coords).query(coords, k=2)[0][:, 1]
     
-    # 1. MASA CRÍTICA (Densidad Edificada)
     buffers = gdf_hist.copy(); buffers['geometry'] = buffers.geometry.buffer(50)
     _edificios['area_m2'] = _edificios.geometry.area
     inter = gpd.sjoin(_edificios[['geometry', 'area_m2']], buffers, how="inner", predicate="intersects")
@@ -78,7 +70,6 @@ def preparar_datos_historicos(ruta_hist, bbox, _crs_objetivo, _edificios, _G_pro
     gdf_hist['id_local'] = gdf_hist.index
     gdf_hist = gdf_hist.merge(masa, on='id_local', how='left').fillna({'m2_construccion_50m': 0})
     
-    # 2. SINTAXIS ESPACIAL (Flujo Peatonal Externo)
     G_undirected = _G_proj.to_undirected()
     centralidad = nx.betweenness_centrality(G_undirected, k=50, weight='length', seed=42)
     nx.set_node_attributes(_G_proj, centralidad, 'betweenness')
@@ -86,13 +77,8 @@ def preparar_datos_historicos(ruta_hist, bbox, _crs_objetivo, _edificios, _G_pro
     _, idx_nodo = cKDTree(np.array(list(zip(_nodos.geometry.x, _nodos.geometry.y)))).query(coords, k=1)
     gdf_hist['centralidad_flujo'] = nodos_con_cent.iloc[idx_nodo]['betweenness'].values
 
-    # 3. LÓGICA DE SEGMENTACIÓN NSE DEDUCTIVA
-    # NSE Alto = Mucha construcción + Cerca de Anclas
-    # NSE Popular = Mucho flujo + Poca construcción sólida (Morfología de mercado)
     gdf_hist['segmento_nse'] = pd.cut(gdf_hist['m2_construccion_50m'], bins=[-1, 1500, 6000, 100000], labels=['Popular', 'Medio', 'Premium'])
-    gdf_hist['indice_informalidad'] = (gdf_hist['centralidad_flujo'] / (gdf_hist['m2_construccion_50m'] + 1)) * 1000
     
-    # Jerarquía y Frontage
     _, idx_arista = cKDTree(np.array(list(zip(_aristas.geometry.centroid.x, _aristas.geometry.centroid.y)))).query(coords, k=1)
     gdf_hist['jerarquia_vial'] = _aristas.iloc[idx_arista]['highway_clean'].values.astype(str)
     gdf_hist['frontage_visible'] = gdf_hist.apply(lambda row: np.random.choice([1, 0], p=[0.9, 0.1]) if row['sobrevivio']==1 else np.random.choice([1, 0], p=[0.3, 0.7]), axis=1)
@@ -104,40 +90,39 @@ def preparar_datos_historicos(ruta_hist, bbox, _crs_objetivo, _edificios, _G_pro
 
 @st.cache_resource
 def entrenar_cerebro_ia(_df_entrenamiento):
-    """Entrena K-Means y CatBoost incluyendo las nuevas dimensiones sociales."""
     variables_fisicas = ['dist_competidor_m', 'm2_construccion_50m', 'dist_ancla_urbana_m', 'dist_esquina_m']
-    
-    # Perfiles Urbanos
     scaler = StandardScaler()
     datos_escalados = scaler.fit_transform(_df_entrenamiento[variables_fisicas])
     kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
     _df_entrenamiento['tipologia_urbana'] = 'Perfil_' + kmeans.fit_predict(datos_escalados).astype(str)
     
-    # CatBoost Supremo (9 Variables + Segmentación)
-    variables_modelo = [
-        'codigo_act', 'dist_competidor_m', 'm2_construccion_50m', 
-        'dist_ancla_urbana_m', 'dist_esquina_m', 'tipologia_urbana', 
-        'centralidad_flujo', 'jerarquia_vial', 'frontage_visible',
-        'segmento_nse' # <-- Inyección de NSE
-    ]
+    variables_modelo = ['codigo_act', 'dist_competidor_m', 'm2_construccion_50m', 'dist_ancla_urbana_m', 'dist_esquina_m', 'tipologia_urbana', 'centralidad_flujo', 'jerarquia_vial', 'frontage_visible', 'segmento_nse']
     
     X = _df_entrenamiento[variables_modelo].copy()
     y = _df_entrenamiento['sobrevivio']
     
-    modelo = CatBoostClassifier(
-        iterations=200, learning_rate=0.05, depth=5, 
-        cat_features=['codigo_act', 'tipologia_urbana', 'jerarquia_vial', 'segmento_nse'], 
-        auto_class_weights='Balanced', verbose=False
-    )
+    modelo = CatBoostClassifier(iterations=200, learning_rate=0.05, depth=5, cat_features=['codigo_act', 'tipologia_urbana', 'jerarquia_vial', 'segmento_nse'], auto_class_weights='Balanced', verbose=False)
     modelo.fit(X, y)
     
     return modelo, scaler, kmeans, variables_fisicas
 
+# --- FUNCIÓN DE EVALUACIÓN (Blindada) ---
 def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
     """Inferencia maestra: Detecta si es una zona de mercado y ajusta la recomendación."""
+    # Accedemos a las variables globales de la sesión
+    crs_obj = st.session_state.crs_obj
+    edificios_fusionados = st.session_state.edificios_fusionados
+    anclas_proyectadas = st.session_state.anclas_proyectadas
+    nodos_gdf = st.session_state.nodos_gdf
+    aristas_gdf = st.session_state.aristas_gdf
+    df_historico_procesado = st.session_state.df_historico_procesado
+    modelo_cat = st.session_state.modelo_cat
+    modelo_kmeans = st.session_state.modelo_kmeans
+    escalador = st.session_state.escalador
+    cols_fisicas = st.session_state.cols_fisicas
+
     p_geom = gpd.GeoSeries([Point(lon, lat)], crs="EPSG:4326").to_crs(crs_obj).geometry[0]
 
-    # Cálculos Espaciales
     masa_critica = edificios_fusionados.clip(p_geom.buffer(50)).area.sum()
     dist_ancla = anclas_proyectadas.distance(p_geom).min()
     dist_esq = nodos_gdf.distance(p_geom).min()
@@ -151,13 +136,10 @@ def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
     idx_arista = aristas_gdf.distance(p_geom).idxmin()
     jerarquia_val = aristas_gdf.loc[idx_arista, 'highway_clean']
 
-    # DEDUCCIÓN DE SEGMENTO
     if masa_critica > 6000: seg_nse = 'Premium'
     elif masa_critica > 1500: seg_nse = 'Medio'
     else: seg_nse = 'Popular'
     
-    # DETECTOR DE TRAMPA (Mercado Informal)
-    # Si hay mucho flujo pero poca construcción sólida = Zona Informal
     es_informal = 1 if (centralidad_val > 0.008 and masa_critica < 2000) else 0
 
     df_cluster = pd.DataFrame([[dist_comp, masa_critica, dist_ancla, dist_esq]], columns=cols_fisicas)
@@ -177,20 +159,17 @@ def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
     }])
 
     probs = modelo_cat.predict_proba(X_sim)[0]
-    
-    # AJUSTE DE REALISMO COMERCIAL
     prob_exito = probs[1]
-    if es_informal and str(giro_scian).startswith(('722511', '713')): # Restaurantes Gourmet / Gyms Boutique
-        prob_exito *= 0.3 # Penalización drástica en zona de mercado
-    if es_informal and str(giro_scian).startswith(('46', '722518')): # Abarrotes / Dark Kitchens
-        prob_exito *= 1.3 # Bonus por ser zona de volumen popular
+    
+    if es_informal and str(giro_scian).startswith(('722511', '713')): prob_exito *= 0.3 
+    if es_informal and str(giro_scian).startswith(('46', '722518')): prob_exito *= 1.3 
 
     return [1-prob_exito, prob_exito], es_informal, X_sim.iloc[0]
 
-    ##Función reporte
-
-    def generar_reporte_csv(df_resultados, lat, lon):
+# --- FUNCIÓN DE REPORTE (Fuera de la anterior) ---
+def generar_reporte_csv(df_resultados, lat, lon):
     """Crea un enlace de descarga para los resultados del análisis."""
+    import base64
     csv = df_resultados.to_csv(index=False).encode('utf-8-sig')
     b64 = base64.b64encode(csv).decode()
     href = f'<a href="data:file/csv;base64,{b64}" download="reporte_geomarketing_{lat}_{lon}.csv">📥 Descargar Reporte de Etapa (CSV)</a>'
