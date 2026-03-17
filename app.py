@@ -28,7 +28,7 @@ RUTA_HISTORICO = "denue_inegi_222_.csv"
 G_CLIENT = googlemaps.Client(key='AIzaSyDbysfcLFSNOruYHHaQgGhbqtBllqdtlY0')
 
 # ==============================================================================
-# CAPA 2: EL CEREBRO (IA + GOOGLE + ANCLAS URBANAS)
+# CAPA 2: EL CEREBRO (IA + GOOGLE + AGLOMERACIÓN Y DIVERSIDAD)
 # ==============================================================================
 
 @st.cache_resource
@@ -85,35 +85,50 @@ def entrenar_cerebro_ia(_df):
 
 def obtener_contexto_detallado_google(lat, lon):
     try:
-        res = G_CLIENT.places_nearby(location=(lat, lon), radius=120)
-        tipos, precios, patron = [], [], "Comercio Mixto"
+        res = G_CLIENT.places_nearby(location=(lat, lon), radius=250)
+        tipos, precios, patron = [], [], "No detectado"
         max_rating_zona = 0
+        total_lugares = len(res.get('results', []))
+        
+        comp_vivo = {'461110': 0, '722511': 0, '722518': 0, '446110': 0, '812110': 0, '611110': 0}
+        
         for p in res.get('results', []):
             t_list = p.get('types', [])
             tipos.extend(t_list)
             if 'price_level' in p: precios.append(p['price_level'])
             if 'user_ratings_total' in p: 
                 if p['user_ratings_total'] > max_rating_zona: max_rating_zona = p['user_ratings_total']
-            if any(x in t_list for x in ['night_club', 'bar', 'restaurant']): patron = "Vida Nocturna / Gastronómico"
-            elif any(x in t_list for x in ['office', 'bank', 'government_office']): patron = "Corporativo (Lun-Vie)"
+            
+            if any(x in t_list for x in ['night_club', 'bar', 'restaurant', 'cafe']): patron = "Vida Nocturna / Gastronómico"
+            elif any(x in t_list for x in ['office', 'bank', 'local_government_office']): patron = "Corporativo (Lun-Vie)"
+            
+            if any(x in t_list for x in ['convenience_store', 'supermarket']): comp_vivo['461110'] += 1
+            if any(x in t_list for x in ['restaurant', 'cafe', 'meal_takeaway']): comp_vivo['722511'] += 1; comp_vivo['722518'] += 1
+            if 'pharmacy' in t_list: comp_vivo['446110'] += 1
+            if any(x in t_list for x in ['spa', 'beauty_salon', 'hair_care']): comp_vivo['812110'] += 1
+            
         es_m = any(x in tipos for x in ['shopping_mall', 'department_store'])
         es_gas = 'gas_station' in tipos
-        nse_g = "Premium" if (precios and (sum(precios)/len(precios)) >= 2.2) else None
-        return {'es_mall': es_m, 'es_gasolineria': es_gas, 'nse_google': nse_g, 'patron_flujo': patron, 'max_reviews': max_rating_zona}
+        nse_g = "Premium" if (precios and (sum(precios)/len(precios)) >= 2.0) else None
+        
+        return {'es_mall': es_m, 'es_gasolineria': es_gas, 'nse_google': nse_g, 'patron_flujo': patron, 
+                'max_reviews': max_rating_zona, 'total_lugares': total_lugares, 'competencia_vivo': comp_vivo}
     except:
-        return {'es_mall': False, 'es_gasolineria': False, 'nse_google': None, 'patron_flujo': "No detectado", 'max_reviews': 0}
+        return {'es_mall': False, 'es_gasolineria': False, 'nse_google': None, 'patron_flujo': "No detectado", 'max_reviews': 0, 'total_lugares': 0, 'competencia_vivo': {}}
 
-def clasificar_micro_entorno(p_geom, edif, denue, ctx_g, cerca_escuela):
-    # Ya recibe los 5 datos correctamente
+def clasificar_micro_entorno(p_geom, edif, denue, ctx_g, cerca_escuela, nse):
     if ctx_g['es_gasolineria']: return "Estación de Servicio / Nodo Conveniencia"
     if ctx_g['es_mall']: return "Plaza Comercial / Retail Hub"
     actual = edif[edif.intersects(p_geom)]
     if actual.empty: return "Lote Baldío / Espacio Abierto"
+    
     area = actual.geometry.iloc[0].area
     locales = len(denue[denue.intersects(p_geom.buffer(80))])
+    
     if area > 1500: 
-        if ctx_g['max_reviews'] < 15 and not cerca_escuela: return "Gran Superficie (Subutilizada / Decadencia)"
-        return "Lifestyle Center / Zona Alto Valor" if locales > 3 else "Tienda Ancla / Big Box"
+        if ctx_g['total_lugares'] < 3 and ctx_g['max_reviews'] < 10 and nse != 'Premium' and not cerca_escuela: 
+            return "Gran Superficie (Subutilizada / Decadencia)"
+        return "Lifestyle Center / Zona Alto Valor" if locales > 2 or ctx_g['es_mall'] else "Tienda Ancla / Big Box"
     return "Corredor Comercial (Grano Fino)" if area < 500 else "Uso Mixto / Habitacional"
 
 def evaluar_local_comercial(lat, lon, giro_scian):
@@ -131,75 +146,85 @@ def evaluar_local_comercial(lat, lon, giro_scian):
     cent_v = nod.loc[idx_n, 'betweenness'] if 'betweenness' in nod.columns else 0.001
     
     escuelas = ancl[ancl['amenity'].isin(['school', 'university'])]
-    hospitales = ancl[ancl['amenity'].isin(['hospital', 'clinic'])]
     mercados = ancl[ancl['amenity'].isin(['marketplace', 'bus_station'])]
-    
     dist_escuela = escuelas.distance(p_geom).min() if not escuelas.empty else 1000
-    dist_hospital = hospitales.distance(p_geom).min() if not hospitales.empty else 1000
     dist_mercado = mercados.distance(p_geom).min() if not mercados.empty else 1000
-    
-    cerca_escuela = dist_escuela < 150
-    cerca_hospital = dist_hospital < 150
-    cerca_mercado = dist_mercado < 150
+    cerca_escuela, cerca_mercado = dist_escuela < 150, dist_mercado < 150
 
-    l_m_g = df_h[df_h['codigo_act'] == str(giro_scian)]
-    dist_c, sat = (l_m_g.distance(p_geom).min(), len(l_m_g.clip(p_geom.buffer(300)))) if not l_m_g.empty else (800, 0)
-    
-    tipo = clasificar_micro_entorno(p_geom, edif, df_h, ctx_g, cerca_escuela)
     nse = ctx_g['nse_google'] if ctx_g['nse_google'] else ('Premium' if masa > 6000 else ('Medio' if masa > 1800 else 'Popular'))
+    tipo = clasificar_micro_entorno(p_geom, edif, df_h, ctx_g, cerca_escuela, nse)
     es_informal = True if (cent_v > 0.005 and nse == 'Popular') else False
 
-    patron_flujo = ctx_g['patron_flujo']
-    dias_pico = "Sábados y Domingos"
-    ancla_dominante = "Ninguna (Flujo Orgánico)"
-    mult_ancla = 1.0 
+    # --- COMPETENCIA REAL ---
+    l_m_g = df_h[df_h['codigo_act'] == str(giro_scian)]
+    dist_c = l_m_g.distance(p_geom).min() if not l_m_g.empty else 800
+    sat_historica = len(l_m_g.clip(p_geom.buffer(300))) if not l_m_g.empty else 0
+    saturacion_real = max(sat_historica, ctx_g['competencia_vivo'].get(str(giro_scian), 0))
 
-    if cerca_hospital:
-        ancla_dominante = "Hospital / Centro de Salud"
-        patron_flujo = "Flujo Constante (Salud/Urgencias)"
-        dias_pico = "Lunes a Domingo (24/7)"
-        if giro_scian == '446110': mult_ancla = 2.2 
-        if giro_scian == '722518': mult_ancla = 1.5 
-        if giro_scian in ['812110', '611110', '722511']: mult_ancla = 0.4 
-    elif cerca_mercado:
-        ancla_dominante = "Mercado / Nodo de Transporte"
-        nse = 'Popular' if nse == 'Premium' else nse 
-        es_informal = True
-        if giro_scian == '461110': mult_ancla = 1.8 
-        if giro_scian == '722518': mult_ancla = 1.4 
-        if giro_scian in ['812110', '722511']: mult_ancla = 0.3 
-    elif cerca_escuela:
-        ancla_dominante = "Centro Educativo"
-        nse = 'Medio' if nse == 'Premium' else nse
-        patron_flujo = "Escolar / Estudiantil"
-        dias_pico = "Lunes a Viernes (Matutino/Vespertino)"
-        if giro_scian in ['461110', '722518']: mult_ancla = 1.6 
-        if giro_scian == '611110': mult_ancla = 1.5 
-        if str(giro_scian).startswith('722511'): mult_ancla = 0.3 
-    elif patron_flujo == "Corporativo (Lun-Vie)":
-        ancla_dominante = "Zona Corporativa"
-        dias_pico = "Lunes a Viernes"
-        if giro_scian in ['722518', '461110']: mult_ancla = 1.6 
-        if giro_scian == '611110': mult_ancla = 0.5 
-    elif patron_flujo == "Vida Nocturna / Gastronómico":
-        dias_pico = "Jueves a Sábado (Noche)"
-        if giro_scian in ['722511']: mult_ancla = 1.5
-
+    # --- PREDICCIÓN IA BASE ---
     df_cl = pd.DataFrame([[dist_c, masa, dist_a, dist_e]], columns=c_f)
     tribu = f"Perfil_{mod_k.predict(esc.transform(df_cl))[0]}"
     X = pd.DataFrame([{'codigo_act': str(giro_scian), 'dist_competidor_m': dist_c, 'm2_construccion_50m': masa, 'dist_ancla_urbana_m': dist_a, 'dist_esquina_m': dist_e, 'tipologia_urbana': tribu, 'centralidad_flujo': cent_v, 'segmento_nse': nse}])
     p_base = mod_c.predict_proba(X)[0][1]
-    
-    if es_informal and giro_scian == '461110': mult_ancla *= 0.65 
-    penalizacion_sat = (0.75 ** sat) if sat > 0 else 1.15 
 
-    p_ex = p_base * mult_ancla * penalizacion_sat
+    # =========================================================================
+    # NUEVO MOTOR: TEORÍA DE AGLOMERACIÓN VS CANIBALIZACIÓN Y VITALIDAD
+    # =========================================================================
+    
+    # 1. Fuerza de Mercado: ¿Aglomeración o Canibalización?
+    giros_conveniencia = ['461110', '446110'] # Mini-super, Farmacia
+    giros_aglomeracion = ['722511', '722518', '812110', '611110'] # Restaurantes, Spas, Academias
+    
+    factor_competencia = 1.0
+    
+    if str(giro_scian) in giros_conveniencia:
+        # Conveniencia: Castigo exponencial puro (Canibalización)
+        factor_competencia = (0.75 ** saturacion_real) if saturacion_real > 0 else 1.15
+    elif str(giro_scian) in giros_aglomeracion:
+        # Destino: Curva de Clúster de Hotelling (Aglomeración positiva hasta un límite)
+        if saturacion_real == 0:
+            factor_competencia = 1.05 # Pionero
+        elif 1 <= saturacion_real <= 3:
+            factor_competencia = 1.35 # Efecto Clúster Mágico (Corredor comercial atrae flujos)
+        elif 4 <= saturacion_real <= 5:
+            factor_competencia = 1.10 # Madurez del clúster
+        else:
+            factor_competencia = 0.85 # Sobresaturación brutal
+
+    # 2. Índice de Diversidad y Vitalidad Económica (Jane Jacobs)
+    tipos_distintos_vivos = sum(1 for k, v in ctx_g['competencia_vivo'].items() if v > 0)
+    bono_diversidad = 1.0
+    if tipos_distintos_vivos >= 3:
+        bono_diversidad = 1.25 # Zona vibrante de Usos Mixtos (Sube todo el ecosistema)
+    elif tipos_distintos_vivos == 0 and masa > 2000:
+        bono_diversidad = 0.85 # Zona estéril o "Elefante Blanco"
+
+    # 3. Reglas de Fricción y Anclas
+    patron_flujo = ctx_g['patron_flujo']
+    dias_pico, ancla_dominante, mult_ancla = "Sábados y Domingos", "Ninguna (Flujo Orgánico)", 1.0 
+
+    if cerca_mercado:
+        ancla_dominante, dias_pico, es_informal = "Mercado / Nodo de Transporte", "Lunes a Domingo", True
+        if giro_scian == '461110': mult_ancla *= 1.3 
+        if giro_scian == '722518': mult_ancla *= 1.4 
+    elif cerca_escuela:
+        ancla_dominante, dias_pico = "Centro Educativo", "Lunes a Viernes (Matutino/Vespertino)"
+        if giro_scian in ['461110', '722518']: mult_ancla *= 1.6 
+    elif patron_flujo == "Corporativo (Lun-Vie)":
+        ancla_dominante, dias_pico = "Zona Corporativa", "Lunes a Viernes"
+        if giro_scian in ['722518', '461110']: mult_ancla *= 1.5 
+    
+    if es_informal and giro_scian == '461110': mult_ancla *= 0.65 # Fricción informal ahoga al Oxxo
+
+    # CÁLCULO FINAL INTEGRADOR
+    p_ex = p_base * mult_ancla * factor_competencia * bono_diversidad
     p_ex = min(max(p_ex, 0.05), 0.96) 
     
     ctx = {
         'tipo_predio': tipo, 'segmento_nse': nse, 'patron_flujo': patron_flujo, 
-        'dias_pico': dias_pico, 'masa_critica': masa, 'potencial_renta': "Alto" if mult_ancla > 1.3 else "Moderado", 
-        'conectividad': "Alta" if cent_v > 0.006 else "Local", 'ancla_dominante': ancla_dominante, 'es_informal': es_informal
+        'dias_pico': dias_pico, 'masa_critica': masa, 'potencial_renta': "Alto" if (mult_ancla * bono_diversidad) > 1.2 else "Moderado", 
+        'conectividad': "Alta" if cent_v > 0.006 else "Local", 'ancla_dominante': ancla_dominante, 'es_informal': es_informal,
+        'saturacion': saturacion_real, 'indice_vitalidad': "Alto (Usos Mixtos)" if tipos_distintos_vivos >=3 else "Bajo/Medio"
     }
     return [1-p_ex, p_ex], ctx, X.iloc[0]
 
