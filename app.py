@@ -232,53 +232,79 @@ def evaluar_local_comercial(lat, lon, giro_scian):
     return [1-p_ex, p_ex], ctx, X.iloc[0]
 
 # ==============================================================================
-# CAPA 3 & 4: INICIALIZACIÓN E INTERFAZ CON HUELLAS DE EDIFICIOS
+# CAPA 3: INICIALIZACIÓN (SISTEMA Y ESTADOS EN MEMORIA)
 # ==============================================================================
 if 'data_cargada' not in st.session_state:
     with st.spinner("⏳ Iniciando Gemelo Digital de Querétaro..."):
+        # 1. Carga de entornos y entrenamiento
         G, ed, an, nd, ar, cr = cargar_entorno_base(BBOX)
         df = preparar_datos_historicos(RUTA_HISTORICO, BBOX, cr, ed, G, nd, ar)
         mc, sc, mk, cf = entrenar_cerebro_ia(df)
-        st.session_state.update({'crs_obj': cr, 'edificios_fusionados': ed, 'anclas_proyectadas': an, 'nodos_gdf': nd, 'df_historico_procesado': df, 'modelo_cat': mc, 'escalador': sc, 'modelo_kmeans': mk, 'cols_fisicas': cf, 'data_cargada': True})
+        
+        # 2. Guardado en Memoria (Caché)
+        st.session_state.update({
+            'crs_obj': cr, 
+            'edificios_fusionados': ed, 
+            'anclas_proyectadas': an, 
+            'nodos_gdf': nd, 
+            'df_historico_procesado': df, 
+            'modelo_cat': mc, 
+            'escalador': sc, 
+            'modelo_kmeans': mk, 
+            'cols_fisicas': cf, 
+            'data_cargada': True
+        })
 
+# 3. Variables de estado de navegación
 if 'c_lat' not in st.session_state: st.session_state.c_lat = 20.605192
 if 'c_lng' not in st.session_state: st.session_state.c_lng = -100.382373
 if 'analisis' not in st.session_state: st.session_state.analisis = False
 
+
+# ==============================================================================
+# CAPA 4: INTERFAZ DE USUARIO (MAPA Y REPORTE MULTIDIMENSIONAL)
+# ==============================================================================
 st.title("🎯 Oráculo Urbano: Inteligencia Territorial")
 st.markdown("### Motor de Viabilidad Inmobiliaria Enriquecido (SIG + Google Places)")
+
 c_map, c_diag = st.columns([2, 1])
 
+# --- SECCIÓN IZQUIERDA: MAPA INTERACTIVO ---
 with c_map:
     lat_a, lon_a = st.session_state.c_lat, st.session_state.c_lng
     m = folium.Map(location=[lat_a, lon_a], zoom_start=18, tiles='CartoDB positron')
     
-    # 1. Recortamos edificios para no trabar el navegador (Radio de ~400m)
+    # Recortamos edificios para no trabar el navegador (Radio de ~400m)
     p_central = Point(lon_a, lat_a)
     edif_geo = st.session_state.edificios_fusionados.to_crs("EPSG:4326")
     edif_recorte = edif_geo.clip(p_central.buffer(0.004))
     
-    # 2. Dibujamos las huellas de Overture / OSM en el mapa
+    # Dibujamos las huellas de Overture / OSM en el mapa
     folium.GeoJson(
         edif_recorte,
         style_function=lambda x: {'fillColor': '#8A2BE2', 'color': '#4B0082', 'weight': 1, 'fillOpacity': 0.3},
         name="Huellas Constructivas"
     ).add_to(m)
     
+    # Marcador y Buffers (Zonas de influencia)
     folium.Marker([lat_a, lon_a], icon=folium.Icon(color='purple', icon='star')).add_to(m)
     folium.Circle([lat_a, lon_a], radius=50, color='blue', fill=True, opacity=0.2).add_to(m)
     folium.Circle([lat_a, lon_a], radius=300, color='gray', fill=False, dash_array='5, 5').add_to(m)
     
     map_dict = st_folium(m, width="100%", height=550, key=f"map_{lat_a}")
+    
+    # Interacción de clic
     if map_dict.get("last_clicked"):
         n_lat, n_lng = map_dict["last_clicked"]["lat"], map_dict["last_clicked"]["lng"]
         if n_lat != st.session_state.c_lat:
             st.session_state.c_lat, st.session_state.c_lng, st.session_state.analisis = n_lat, n_lng, False
             st.rerun()
 
+# --- SECCIÓN DERECHA: PANEL DE DIAGNÓSTICO ---
 with c_diag:
     st.subheader("🧐 Centro de Diagnóstico")
     st.code(f"LAT: {st.session_state.c_lat:.5f}\nLNG: {st.session_state.c_lng:.5f}")
+    
     if st.button("🔍 GENERAR DICTAMEN DE SITIO", type="primary", use_container_width=True, key=f"btn_{st.session_state.c_lat}"):
         with st.spinner("Ejecutando motores de IA y Flujo Temporal..."):
             giros = {"722511": "Restaurante Gourmet", "611110": "Academia", "446110": "Farmacia", "812110": "Spa / Belleza", "461110": "Mini-Super", "722518": "Cocina Económica"}
@@ -286,9 +312,12 @@ with c_diag:
             for cod, nom in giros.items():
                 p, c, _ = evaluar_local_comercial(st.session_state.c_lat, st.session_state.c_lng, cod)
                 res.append({"Giro": nom, "Viabilidad (%)": round(p[1] * 100, 1)})
-            st.session_state.df_res, st.session_state.ctx, st.session_state.analisis = pd.DataFrame(res).sort_values(by="Viabilidad (%)", ascending=False), c, True
+            st.session_state.df_res = pd.DataFrame(res).sort_values(by="Viabilidad (%)", ascending=False)
+            st.session_state.ctx = c
+            st.session_state.analisis = True
             st.rerun()
 
+# --- SECCIÓN INFERIOR: REPORTE DE RESULTADOS ---
 if st.session_state.analisis:
     st.markdown("---")
     t1, t2, t3, t4 = st.tabs(["🏗️ Morfología", "👥 Demografía", "⏳ Flujo Temporal", "📋 Dictamen"])
@@ -297,19 +326,24 @@ if st.session_state.analisis:
     with t1:
         st.metric("Clasificación de Suelo", info['tipo_predio'])
         st.metric("Masa Crítica Construida", f"{info['masa_critica']:.0f} m²")
-        if "Decadencia" in info['tipo_predio']: st.error("⚠️ Alerta: Volumen de edificio alto pero nula tracción digital (Reseñas Bajas).")
+        if "Decadencia" in info['tipo_predio']: 
+            st.error("⚠️ Alerta: Volumen de edificio alto pero nula tracción digital (Reseñas Bajas).")
+            
     with t2:
         st.subheader(f"NSE Deducido: {info['segmento_nse']}")
         st.info("Escolaridad: " + ("Superior" if info['segmento_nse'] == "Premium" else "Media"))
-        if info.get('cerca_escuela'): st.warning("🏫 Centro Educativo a <100m. Impacto en flujos comerciales segmentados.")
-   with t3:
-        st.metric("Ancla Urbana Dominante", info.get('ancla_dominante', "Ninguna")) # <-- ¡NUEVO!
+        if info.get('cerca_escuela'): 
+            st.warning("🏫 Centro Educativo a <100m. Impacto en flujos comerciales segmentados.")
+            
+    with t3: # <-- ¡Indentación arreglada aquí!
+        st.metric("Ancla Urbana Dominante", info.get('ancla_dominante', "Ninguna"))
         c_f1, c_f2 = st.columns(2)
         with c_f1:
             st.metric("Días de Mayor Flujo", info.get('dias_pico', "N/A"))
         with c_f2:
             st.metric("Potencial de Renta", info.get('potencial_renta', "Moderado"))
         st.write(f"**Patrón Dominante:** {info['patron_flujo']}")
+        
     with t4:
         st.dataframe(st.session_state.df_res, use_container_width=True, hide_index=True)
         st.bar_chart(st.session_state.df_res.set_index("Giro"))
