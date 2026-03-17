@@ -20,8 +20,10 @@ st.set_page_config(page_title="Oráculo Urbano PropTech", layout="wide")
 # ==============================================================================
 # LLAVES DE API (INTEGRADAS)
 # ==============================================================================
-MAPS_KEY = "AIzaSyDbysfcLFSNOruYHHaQgGhbqtBllqdtlY0"
-GEMINI_KEY = "AIzaSyAA6jOtI3YoCXQstAPTSz4Gw_PccEOmmJc"
+GEMINI_KEY = "AIzaSyCCPZ8Fzb-bTKfxOk4oL-idreNjPjgsDuk"
+G_MAPS_KEY = "AIzaSyDbysfcLFSNOruYHHaQgGhbqtBllqdtlY0"
+
+
 
 # Inicialización de clientes
 G_CLIENT = googlemaps.Client(key=MAPS_KEY)
