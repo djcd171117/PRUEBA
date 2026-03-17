@@ -12,3 +12,4 @@ scikit-learn
 catboost
 overturemaps
 googlemaps
+google-generativeai
