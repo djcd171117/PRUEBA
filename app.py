@@ -253,7 +253,7 @@ if sistema_listo:
         st.code(f"{curr_lat:.6f}, {curr_lon:.6f}")
         
         # --- BOTÓN DE DISPARO DEL MOTOR IA ---
-        if st.button("🚀 Ejecutar Estudio Completo", type="primary", use_container_width=True):
+        if st.button("🚀 Ejecutar Estudio Completo", type="primary", use_container_width=True, key="btn_estudio_maestro"):
             with st.spinner("Analizando micro-morfología y flujos..."):
                 # Definición de giros para el ranking del reporte
                 giros = {
