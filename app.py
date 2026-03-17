@@ -20,7 +20,7 @@ st.set_page_config(page_title="Motor Predictivo PropTech", layout="wide")
 # CONSTANTES GLOBALES Y LLAVES API
 BBOX = (-100.409632, 20.584369, -100.371437, 20.618641)
 G_CLIENT = googlemaps.Client(key='AIzaSyDbysfcLFSNOruYHHaQgGhbqtBllqdtlY0')
-genai.configure(api_key="TU_API_KEY_DE_GEMINI") # <-- INSERTA TU LLAVE AQUÍ
+genai.configure(api_key="AIzaSyAA6jOtI3YoCXQstAPTSz4Gw_PccEOmmJc") # <-- INSERTA TU LLAVE AQUÍ
 
 # ==============================================================================
 # CAPA 2: MOTOR ESPACIAL Y CONTEXTUAL
