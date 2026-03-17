@@ -209,81 +209,115 @@ if 'data_cargada' not in st.session_state:
 sistema_listo = True
 
 # ==============================================================================
-# CAPA 4: FRONT-END "REPORTEADOR PRO"
+# CAPA 4: FRONT-END "REPORTEADOR PRO" (VERSIÓN FINAL BLINDADA)
 # ==============================================================================
 if sistema_listo:
     st.title("🎯 Oráculo Urbano: Inteligencia Territorial")
-    if 'coords' not in st.session_state: st.session_state.coords = {"lat": 20.605192, "lng": -100.382373}
-    if 'analisis_listo' not in st.session_state: st.session_state.analisis_listo = False
+    st.markdown("### Análisis Micro-Urbano para Dictámenes de Viabilidad")
 
+    # 1. GESTIÓN DE ESTADO INICIAL
+    if 'coords' not in st.session_state: 
+        st.session_state.coords = {"lat": 20.605192, "lng": -100.382373}
+    
+    # Esta bandera controla que no se intenten leer resultados antes de tiempo
+    if 'analisis_listo' not in st.session_state: 
+        st.session_state.analisis_listo = False
+
+    # 2. DISEÑO DE COLUMNAS (MAPA | DIAGNÓSTICO)
     col_mapa, col_stats = st.columns([2, 1])
     
     with col_mapa:
         lat_a, lon_a = st.session_state.coords["lat"], st.session_state.coords["lng"]
+        
+        # Mapa interactivo con Folium
         m = folium.Map(location=[lat_a, lon_a], zoom_start=18, tiles='CartoDB positron')
-        folium.Marker([lat_a, lon_a], icon=folium.Icon(color='purple', icon='star')).add_to(m)
+        folium.Marker([lat_a, lon_a], 
+                      icon=folium.Icon(color='purple', icon='star'),
+                      popup="Punto de Análisis Actual").add_to(m)
+        
         mapa_i = st_folium(m, width="100%", height=550, key="selector_urbano")
+        
+        # Captura de clic y actualización de coordenadas
         if mapa_i.get("last_clicked"):
             c_lat, c_lng = mapa_i["last_clicked"]["lat"], mapa_i["last_clicked"]["lng"]
             if c_lat != st.session_state.coords["lat"]:
                 st.session_state.coords = {"lat": c_lat, "lng": c_lng}
-                st.session_state.analisis_listo = False
+                st.session_state.analisis_listo = False # Resetear reporte al mover el punto
                 st.rerun()
 
     with col_stats:
         st.subheader("🧐 Centro de Diagnóstico")
         curr_lat, curr_lon = st.session_state.coords["lat"], st.session_state.coords["lng"]
-        if st.button("🚀 Ejecutar Estudio Completo", type="primary", use_container_width=True):
-            with st.spinner("Analizando micro-morfología..."):
-                giros = {"722511": "Restaurante Gourmet", "611110": "Academia", "446110": "Farmacia", "812110": "Spa/Belleza", "461110": "Mini-Super", "722518": "Cocina Económica"}
-                res = []
-                for cod, nom in giros.items():
-                    probs, contexto, vars_sim = evaluar_local_comercial(curr_lat, curr_lon, cod)
-                    res.append({"Giro": nom, "Viabilidad (%)": round(probs[1] * 100, 1)})
-                st.session_state.df_resultados = pd.DataFrame(res).sort_values(by="Viabilidad (%)", ascending=False)
-                st.session_state.contexto_predio = contexto
-                st.session_state.analisis_listo = True
-
-        # --- BOTÓN DE PROCESAMIENTO ---
+        
+        st.write(f"**Ubicación seleccionada:**")
+        st.code(f"{curr_lat:.6f}, {curr_lon:.6f}")
+        
+        # --- BOTÓN DE DISPARO DEL MOTOR IA ---
         if st.button("🚀 Ejecutar Estudio Completo", type="primary", use_container_width=True):
             with st.spinner("Analizando micro-morfología y flujos..."):
-                giros = {"722511": "Restaurante Gourmet", "611110": "Academia", "446110": "Farmacia", "812110": "Spa/Belleza", "461110": "Mini-Super", "722518": "Cocina Económica"}
+                # Definición de giros para el ranking del reporte
+                giros = {
+                    "722511": "Restaurante Gourmet", 
+                    "611110": "Academia / Educación", 
+                    "446110": "Farmacia", 
+                    "812110": "Spa / Belleza", 
+                    "461110": "Mini-Super / Abarrotes", 
+                    "722518": "Cocina Económica"
+                }
+                
                 res = []
+                # Ejecutamos la evaluación para cada giro
                 for cod, nom in giros.items():
+                    # Recibimos: [prob_fracaso, prob_exito], diccionario_contexto, variables_simulacion
                     probs, contexto, vars_sim = evaluar_local_comercial(curr_lat, curr_lon, cod)
                     res.append({"Giro": nom, "Viabilidad (%)": round(probs[1] * 100, 1)})
                 
-                # GUARDAMOS TODO EN EL ESTADO DE LA SESIÓN
+                # GUARDADO SEGURO EN SESSION_STATE
                 st.session_state.df_resultados = pd.DataFrame(res).sort_values(by="Viabilidad (%)", ascending=False)
                 st.session_state.contexto_predio = contexto
                 st.session_state.analisis_listo = True
-                st.rerun() # Forzamos recarga para que aparezcan los resultados
+                st.rerun()
 
-        # --- SEGURO CONTRA ATTRIBUTEERROR ---
-        # Solo dibujamos si 'analisis_listo' es True Y existe la llave en session_state
+        # --- SECCIÓN DE RESULTADOS (Solo visible si el análisis terminó) ---
         if st.session_state.analisis_listo and 'contexto_predio' in st.session_state:
             st.markdown("---")
+            # El "Reporteador" dividido por pestañas de tesis
             t1, t2, t3 = st.tabs(["🏗️ Morfología", "👥 Segmentación", "📋 Dictamen"])
             
-            # Ahora es seguro leer la variable ctx
             ctx = st.session_state.contexto_predio
             
             with t1:
+                st.write("### Análisis de Infraestructura")
                 st.metric("Tipo de Predio", ctx['tipo_predio'])
-                st.metric("Masa Crítica", f"{ctx['masa_critica']:.0f} m²")
+                st.metric("Masa Crítica (50m)", f"{ctx['masa_critica']:.0f} m²")
                 st.write(f"**Trama Urbana:** {ctx['conectividad']}")
-            
+                st.caption("Detección basada en intersección de polígonos de Overture Maps.")
+                
             with t2:
-                st.subheader(f"NSE Deducido: {ctx['segmento_nse']}")
-                if ctx['es_informal']: 
-                    st.warning("⚠️ Zona de Mercado Informal Detectada")
+                st.write("### Perfil Socioeconómico")
+                st.subheader(f"NSE Deducido: **{ctx['segmento_nse']}**")
+                
+                if ctx['es_informal']:
+                    st.warning("⚠️ **Zona de Mercado Detectada:** Alta densidad de flujo con baja infraestructura sólida. Priorizando giros de consumo masivo.")
                 else:
-                    st.success("✅ Entorno Urbano Consolidado")
+                    st.success("✅ **Entorno Consolidado:** El área presenta infraestructura comercial permanente.")
             
             with t3:
+                st.write("### Ranking de Oportunidades")
                 st.dataframe(st.session_state.df_resultados, use_container_width=True, hide_index=True)
+                
+                # Gráfico visual para el reporte impreso
+                st.bar_chart(st.session_state.df_resultados.set_index("Giro"))
+                
+                # Botón de Descarga del Reporte (CSV)
                 csv = st.session_state.df_resultados.to_csv(index=False).encode('utf-8-sig')
-                st.download_button("📥 Descargar Reporte CSV", data=csv, file_name=f"estudio_{curr_lat:.4f}.csv", mime="text/csv")
+                st.download_button(
+                    label="📥 Descargar Reporte Ejecutivo",
+                    data=csv,
+                    file_name=f"reporte_geomarketing_{curr_lat:.4f}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
         else:
-            # Mensaje amigable mientras no hay datos
-            st.info("Configura el punto en el mapa y presiona el botón rojo para generar el reporte.")
+            # Mensaje informativo inicial para guiar al usuario
+            st.info("Selecciona un punto en el mapa y presiona el botón rojo para iniciar el diagnóstico de viabilidad.")
