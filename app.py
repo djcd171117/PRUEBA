@@ -54,7 +54,8 @@ def obtener_contexto_google(lat, lon):
         es_mall = any(x in tipos for x in ['shopping_mall', 'department_store'])
         nse_g = "Premium" if (precios and (sum(precios)/len(precios)) >= 2.0) else None
         
-        return {'es_mall': es_m, 'nse_google': nse_g}
+        # CORREGIDO: es_mall en lugar de es_m
+        return {'es_mall': es_mall, 'nse_google': nse_g}
     except:
         return {'es_mall': False, 'nse_google': None}
 
@@ -84,7 +85,8 @@ def extraer_radiografia_predio(lat, lon):
     
     nse = ctx_g['nse_google'] if ctx_g['nse_google'] else ('Premium' if masa_critica > 8000 else ('Medio' if masa_critica > 2500 else 'Popular'))
     
-    tipo_predio = "Lifestyle Center / Gran Superficie" if masa_critica > 2000 else "Corredor Comercial (Grano Fino)"
+    # Si Google detecta Mall, lo forzamos. Si no, usamos la masa crítica.
+    tipo_predio = "Plaza Comercial / Retail Hub" if ctx_g['es_mall'] else ("Lifestyle Center / Gran Superficie" if masa_critica > 2000 else "Corredor Comercial (Grano Fino)")
     ancla = "Hospital" if cerca_hospital else ("Centro Educativo" if cerca_escuela else "Orgánica / Vecinal")
     
     return {
@@ -101,7 +103,6 @@ def extraer_radiografia_predio(lat, lon):
 
 def generar_dictamen_ai(radiografia):
     """Obliga a la IA a pensar en contexto LATAM y devolver un JSON parseable."""
-    # Usamos el modelo optimizado para tareas estructuradas
     modelo = genai.GenerativeModel('gemini-1.5-flash')
     
     prompt = f"""
@@ -114,7 +115,7 @@ def generar_dictamen_ai(radiografia):
     - Ancla Urbana Dominante (Generador de Flujo): {radiografia['ancla_dominante']}
     
     REGLAS ESTRICTAS PARA EVITAR SESGO EXTRANJERO:
-    1. Piensa en la economía real mexicana (ej. Fondas, Papelerías, Recauderías, Farmacias Similares, Taquerías, Consultorios de barrio, Ferreterías).
+    1. Piensa en la economía real mexicana (ej. Fondas, Papelerías, Recauderías, Farmacias Similares, Taquerías, Consultorios de barrio, Ferreterías, Dentistas).
     2. Evita conceptos irreales para zonas populares (ej. "Boutique de Ropa de Diseñador" en una zona escolar popular).
     3. Asigna un porcentaje de viabilidad realista (0 a 100) basado en la teoría de aglomeración y conveniencia.
     
@@ -127,7 +128,6 @@ def generar_dictamen_ai(radiografia):
     """
     try:
         respuesta = modelo.generate_content(prompt)
-        # Limpieza por si la IA añade markdown accidentalmente
         texto_limpio = respuesta.text.replace('```json', '').replace('```', '').strip()
         datos_json = json.loads(texto_limpio)
         return pd.DataFrame(datos_json)
@@ -200,11 +200,15 @@ if st.session_state.analisis:
     
     with t1:
         c1, c2, c3 = st.columns(3)
-        c1.metric("Morfología", info['tipo_predio'])
-        c2.metric("NSE Proyectado", info['nse'])
-        c3.metric("Tráfico Ancla", info['ancla_dominante'])
+        # BLINDAJE CONTRA KEYERROR USANDO .get() y fallbacks
+        c1.metric("Morfología", info.get('tipo_predio', 'N/A'))
+        c2.metric("NSE Proyectado", info.get('nse', info.get('segmento_nse', 'N/A')))
+        c3.metric("Tráfico Ancla", info.get('ancla_dominante', 'N/A'))
         
     with t2:
         st.write("### Oportunidades Orgánicas Detectadas")
-        st.bar_chart(st.session_state.df_res.set_index("giro")['viabilidad'])
-        st.dataframe(st.session_state.df_res, use_container_width=True, hide_index=True)
+        if not st.session_state.df_res.empty and "giro" in st.session_state.df_res.columns:
+            st.bar_chart(st.session_state.df_res.set_index("giro")['viabilidad'])
+            st.dataframe(st.session_state.df_res, use_container_width=True, hide_index=True)
+        else:
+            st.error("No se pudo estructurar la respuesta de la IA. Por favor, intenta analizar de nuevo.")
