@@ -27,31 +27,104 @@ RUTA_HISTORICO = "denue_inegi_222_.csv" # Tu DENUE del pasado
 RUTA_ACTUAL = "denue_inegi_22_.csv"     # Tu DENUE del presente
 
 # ==============================================================================
-# CAPA 2: EL CEREBRO (INFERENCIA MORFOLÓGICA AVANZADA)
+# CAPA 2: EL CEREBRO (FUNCIONES CACHEADAS E INFERENCIA)
 # ==============================================================================
 
-# --- NUEVA FUNCIÓN: CLASIFICADOR DE MICRO-ENTORNO ---
-def clasificar_micro_entorno(p_geom, edificios, denue_puntos):
-    """
-    Deduce el uso de suelo real analizando la relación entre 
-    la huella del edificio y la densidad de locales.
-    """
-    # 1. Detectar si el punto cae dentro de una huella de edificio
-    edificio_actual = edificios[edificios.intersects(p_geom)]
+@st.cache_resource
+def cargar_entorno_base(bbox):
+    """Descarga y proyecta las capas base de la ciudad."""
+    # Red vial y Grafos
+    G = ox.graph_from_bbox(bbox=bbox, network_type='walk', simplify=True)
+    G_proj = ox.project_graph(G)
+    crs_objetivo = G_proj.graph['crs']
     
+    # Huellas de Edificios (OSM + Overture)
+    osm = ox.features_from_bbox(bbox=bbox, tags={'building': True}).to_crs(crs_objetivo)
+    tabla_ia = overturemaps.record_batch_reader("building", bbox).read_all().to_pandas()
+    tabla_ia["geometry"] = tabla_ia["geometry"].apply(wkb.loads)
+    ia = gpd.GeoDataFrame(tabla_ia, geometry="geometry", crs="EPSG:4326").to_crs(crs_objetivo)
+    edificios_fusionados = gpd.GeoDataFrame(pd.concat([osm[['geometry']], ia[['geometry']]], ignore_index=True), crs=crs_objetivo)
+    
+    # Equipamiento Urbano (Anclas)
+    anclas = ox.features_from_bbox(bbox=bbox, tags={'amenity': ['school', 'university', 'hospital', 'clinic', 'marketplace', 'bus_station']}).to_crs(crs_objetivo)
+    
+    # Red de Nodos y Aristas
+    nodos_gdf, aristas_gdf = ox.graph_to_gdfs(G_proj)
+    aristas_gdf['highway_clean'] = aristas_gdf['highway'].apply(lambda x: x[0] if isinstance(x, list) else x)
+    
+    return G_proj, edificios_fusionados, anclas, nodos_gdf, aristas_gdf, crs_objetivo
+
+@st.cache_data
+def preparar_datos_historicos(ruta_hist, bbox, _crs_objetivo, _edificios, _G_proj, _nodos, _aristas):
+    """Procesa el DENUE inyectando variables de entorno."""
+    df_hist = pd.read_csv(ruta_hist, encoding='latin-1', low_memory=False)
+    gdf_hist = gpd.GeoDataFrame(df_hist, geometry=gpd.points_from_xy(df_hist['longitud'], df_hist['latitud']), crs="EPSG:4326").cx[bbox[0]:bbox[2], bbox[1]:bbox[3]].to_crs(_crs_objetivo)
+    gdf_hist['codigo_act'] = gdf_hist['codigo_act'].astype(str)
+    gdf_hist = gdf_hist[gdf_hist['codigo_act'].str.startswith(('44', '46', '72', '81'))].copy()
+    
+    # Supervivencia Sintética
+    gdf_hist['sobrevivio'] = np.random.choice([1, 0], size=len(gdf_hist), p=[0.7, 0.3])
+    
+    # Distancia a Competidor
+    coords = np.array(list(zip(gdf_hist.geometry.x, gdf_hist.geometry.y)))
+    gdf_hist['dist_competidor_m'] = cKDTree(coords).query(coords, k=2)[0][:, 1]
+    
+    # Masa Crítica (Morfología)
+    buffers = gdf_hist.copy(); buffers['geometry'] = buffers.geometry.buffer(50)
+    _edificios['area_m2'] = _edificios.geometry.area
+    inter = gpd.sjoin(_edificios[['geometry', 'area_m2']], buffers, how="inner", predicate="intersects")
+    masa = inter.groupby('index_right')['area_m2'].sum().reset_index().rename(columns={'index_right': 'id_local', 'area_m2': 'm2_construccion_50m'})
+    gdf_hist['id_local'] = gdf_hist.index
+    gdf_hist = gdf_hist.merge(masa, on='id_local', how='left').fillna({'m2_construccion_50m': 0})
+    
+    # Centralidad de Flujo
+    G_undirected = _G_proj.to_undirected()
+    centralidad = nx.betweenness_centrality(G_undirected, k=50, weight='length', seed=42)
+    nx.set_node_attributes(_G_proj, centralidad, 'betweenness')
+    nodos_con_cent, _ = ox.graph_to_gdfs(_G_proj)
+    _, idx_nodo = cKDTree(np.array(list(zip(_nodos.geometry.x, _nodos.geometry.y)))).query(coords, k=1)
+    gdf_hist['centralidad_flujo'] = nodos_con_cent.iloc[idx_nodo]['betweenness'].values
+    
+    # Segmentación NSE
+    gdf_hist['segmento_nse'] = pd.cut(gdf_hist['m2_construccion_50m'], bins=[-1, 1500, 6000, 1000000], labels=['Popular', 'Medio', 'Premium'])
+    
+    # Variables de Control
+    gdf_hist['jerarquia_vial'] = "residential"
+    gdf_hist['frontage_visible'] = 1
+    gdf_hist['dist_ancla_urbana_m'] = 150.0
+    gdf_hist['dist_esquina_m'] = 20.0
+    
+    return gdf_hist
+
+@st.cache_resource
+def entrenar_cerebro_ia(_df_entrenamiento):
+    """Crea los modelos de Clustering y Clasificación."""
+    variables_fisicas = ['dist_competidor_m', 'm2_construccion_50m', 'dist_ancla_urbana_m', 'dist_esquina_m']
+    scaler = StandardScaler()
+    datos_escalados = scaler.fit_transform(_df_entrenamiento[variables_fisicas])
+    kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
+    _df_entrenamiento['tipologia_urbana'] = 'Perfil_' + kmeans.fit_predict(datos_escalados).astype(str)
+    
+    variables_modelo = ['codigo_act', 'dist_competidor_m', 'm2_construccion_50m', 'dist_ancla_urbana_m', 'dist_esquina_m', 'tipologia_urbana', 'centralidad_flujo', 'segmento_nse']
+    X = _df_entrenamiento[variables_modelo].copy()
+    y = _df_entrenamiento['sobrevivio']
+    
+    modelo = CatBoostClassifier(iterations=100, learning_rate=0.05, depth=5, cat_features=['codigo_act', 'tipologia_urbana', 'segmento_nse'], auto_class_weights='Balanced', verbose=False)
+    modelo.fit(X, y)
+    
+    return modelo, scaler, kmeans, variables_fisicas
+
+def clasificar_micro_entorno(p_geom, edificios, denue_puntos):
+    """Detección de uso de suelo real mediante intersección de polígonos."""
+    edificio_actual = edificios[edificios.intersects(p_geom)]
     if edificio_actual.empty:
-        # Si no hay edificio bajo el cursor pero hay masa crítica cerca, es espacio abierto/baldío
         return "Lote Baldío / Espacio Abierto"
     
-    # 2. Análisis de 'Grano Urbano'
     huella_geom = edificio_actual.geometry.iloc[0]
     area_huella = huella_geom.area
-    
-    # Contamos cuántos locales del DENUE hay dentro de este polígono específico
     locales_en_huella = denue_puntos[denue_puntos.intersects(huella_geom)]
     num_locales = len(locales_en_huella)
     
-    # LÓGICA DE CLASIFICACIÓN (Umbrales de Mercado)
     if area_huella > 2000 and num_locales > 4:
         return "Plaza Comercial / Shopping Center"
     elif area_huella > 2000 and num_locales <= 2:
@@ -61,262 +134,128 @@ def clasificar_micro_entorno(p_geom, edificios, denue_puntos):
     else:
         return "Uso Mixto / Habitacional"
 
-# --- FUNCIÓN DE EVALUACIÓN (Versión 2.0 - Reporte Detallado) ---
 def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
-    """Inferencia Maestra con detección de tipología predial y conectividad."""
-    # Recuperamos variables de sesión
+    """Inferencia Maestra."""
+    # Recuperamos del estado
     crs_obj = st.session_state.crs_obj
     edificios_fusionados = st.session_state.edificios_fusionados
     anclas_proyectadas = st.session_state.anclas_proyectadas
     nodos_gdf = st.session_state.nodos_gdf
-    aristas_gdf = st.session_state.aristas_gdf
     df_historico_procesado = st.session_state.df_historico_procesado
     modelo_cat = st.session_state.modelo_cat
     modelo_kmeans = st.session_state.modelo_kmeans
     escalador = st.session_state.escalador
     cols_fisicas = st.session_state.cols_fisicas
 
-    # A) Proyectar Punto
     p_geom = gpd.GeoSeries([Point(lon, lat)], crs="EPSG:4326").to_crs(crs_obj).geometry[0]
-
-    # B) Cálculos Morfológicos
+    
+    # Atributos Espaciales
     masa_critica = edificios_fusionados.clip(p_geom.buffer(50)).area.sum()
     dist_ancla = anclas_proyectadas.distance(p_geom).min()
     dist_esq = nodos_gdf.distance(p_geom).min()
     
-    # C) Clasificación de Contexto (Puntos clave para tu Tesis)
+    # Análisis de Contexto
     tipo_predio = clasificar_micro_entorno(p_geom, edificios_fusionados, df_historico_procesado)
-    
-    # Índice de Conectividad (Vivienda Social/Privada vs Calle Abierta)
     idx_nodo = nodos_gdf.distance(p_geom).idxmin()
     centralidad_val = nodos_gdf.loc[idx_nodo, 'betweenness'] if 'betweenness' in nodos_gdf.columns else 0.001
     conectividad = "Abierta (Flujo Alto)" if centralidad_val > 0.006 else "Restringida (Privada / Social)"
-
-    # D) Competencia e Inferencia
+    
+    # Competencia
     locales_comp = df_historico_procesado[df_historico_procesado['codigo_act'].str.startswith(str(giro_scian)[:3])]
     dist_comp = locales_comp.distance(p_geom).min() if not locales_comp.empty else 500
-
-    idx_arista = aristas_gdf.distance(p_geom).idxmin()
-    jerarquia_val = aristas_gdf.loc[idx_arista, 'highway_clean']
-
-    # Segmentación NSE
-    if masa_critica > 6000: seg_nse = 'Premium'
-    elif masa_critica > 1500: seg_nse = 'Medio'
-    else: seg_nse = 'Popular'
     
+    seg_nse = 'Premium' if masa_critica > 6000 else ('Medio' if masa_critica > 1500 else 'Popular')
     es_informal = 1 if (centralidad_val > 0.008 and masa_critica < 2000) else 0
 
-    # E) Ejecución de Modelos
+    # Predicción
     df_cluster = pd.DataFrame([[dist_comp, masa_critica, dist_ancla, dist_esq]], columns=cols_fisicas)
     tribu_val = f"Perfil_{modelo_kmeans.predict(escalador.transform(df_cluster))[0]}"
-
+    
     X_sim = pd.DataFrame([{
-        'codigo_act': str(giro_scian),
-        'dist_competidor_m': dist_comp,
-        'm2_construccion_50m': masa_critica,
-        'dist_ancla_urbana_m': dist_ancla,
-        'dist_esquina_m': dist_esq,
-        'tipologia_urbana': tribu_val,
-        'centralidad_flujo': centralidad_val,
-        'jerarquia_vial': jerarquia_val,
-        'frontage_visible': frontage_escenario,
-        'segmento_nse': seg_nse
+        'codigo_act': str(giro_scian), 'dist_competidor_m': dist_comp, 'm2_construccion_50m': masa_critica,
+        'dist_ancla_urbana_m': dist_ancla, 'dist_esquina_m': dist_esq, 'tipologia_urbana': tribu_val,
+        'centralidad_flujo': centralidad_val, 'segmento_nse': seg_nse
     }])
-
-    probs = modelo_cat.predict_proba(X_sim)[0]
-    prob_exito = probs[1]
     
-    # F) AJUSTES LÓGICOS DE MERCADO
-    if tipo_predio == "Plaza Comercial / Shopping Center" and str(giro_scian).startswith(('812', '621')):
-        prob_exito *= 1.25 # Impulso a servicios en plazas
-    if tipo_predio == "Lote Baldío / Espacio Abierto":
-        prob_exito *= 0.65 # Penalización por falta de infraestructura inmediata
-    if es_informal and str(giro_scian).startswith(('722511', '713')): 
-        prob_exito *= 0.3 # Penalización gourmet en mercado informal
+    prob_exito = modelo_cat.predict_proba(X_sim)[0][1]
     
-    # Empaquetado de datos extendidos para la Capa 4
+    # Ajustes de Realismo
+    if tipo_predio == "Plaza Comercial / Shopping Center": prob_exito *= 1.25
+    if tipo_predio == "Lote Baldío / Espacio Abierto": prob_exito *= 0.6
+    if es_informal and str(giro_scian).startswith(('722511')): prob_exito *= 0.3
+    
     contexto_predio = {
-        'tipo_predio': tipo_predio,
-        'conectividad': conectividad,
-        'masa_critica': masa_critica,
-        'segmento_nse': seg_nse,
-        'es_informal': es_informal
+        'tipo_predio': tipo_predio, 'conectividad': conectividad, 
+        'masa_critica': masa_critica, 'segmento_nse': seg_nse, 'es_informal': es_informal
     }
-
+    
     return [1-prob_exito, prob_exito], contexto_predio, X_sim.iloc[0]
 
-# --- FUNCIÓN DE REPORTE ---
-def generar_reporte_csv(df_resultados, lat, lon):
-    import base64
-    csv = df_resultados.to_csv(index=False).encode('utf-8-sig')
-    b64 = base64.b64encode(csv).decode()
-    href = f'<a href="data:file/csv;base64,{b64}" download="reporte_geomarketing_{lat}_{lon}.csv">📥 Descargar Reporte de Etapa (CSV)</a>'
-    return href
-
 # ==============================================================================
-# CAPA 3: INICIALIZACIÓN (Ejecución al arrancar la App)
+# CAPA 3: INICIALIZACIÓN (SISTEMA)
 # ==============================================================================
-with st.spinner("⏳ Cargando Gemelo Digital y Entrenando IA (Esto tomará unos minutos la primera vez)..."):
-    try:
-        G_proyectado, edificios_fusionados, anclas_proyectadas, nodos_gdf, aristas_gdf, crs_obj = cargar_entorno_base(BBOX)
-        df_historico_procesado = preparar_datos_historicos(RUTA_HISTORICO, BBOX, crs_obj, edificios_fusionados, G_proyectado, nodos_gdf, aristas_gdf)
-        modelo_cat, escalador, modelo_kmeans, cols_fisicas = entrenar_cerebro_ia(df_historico_procesado)
-        sistema_listo = True
-    except Exception as e:
-        st.error(f"Error cargando datos: {e}. Asegúrate de que el archivo '{RUTA_HISTORICO}' esté en la misma carpeta.")
-        sistema_listo = False
-
-# ==============================================================================
-# CAPA 3: INICIALIZACIÓN (Hacer las variables accesibles)
-# ==============================================================================
-with st.spinner("⏳ Cargando Gemelo Digital..."):
-    if 'data_cargada' not in st.session_state:
-        # Ejecutamos la función y DESEMPAQUETAMOS los resultados en variables globales
-        (G_proyectado, 
-         edificios_fusionados, 
-         anclas_proyectadas, 
-         nodos_gdf, 
-         aristas_gdf, 
-         crs_obj) = cargar_entorno_base(BBOX)
-        
-        # Procesamos el histórico
-        df_historico_procesado = preparar_datos_historicos(
-            RUTA_HISTORICO, BBOX, crs_obj, edificios_fusionados, 
-            G_proyectado, nodos_gdf, aristas_gdf
-        )
-        
-        # Entrenamos la IA
-        modelo_cat, escalador, modelo_kmeans, cols_fisicas = entrenar_cerebro_ia(df_historico_procesado)
-        
-        # Guardamos todo en session_state para que no se pierda al refrescar
+if 'data_cargada' not in st.session_state:
+    with st.spinner("⏳ Iniciando Gemelo Digital de Querétaro..."):
+        G_p, edif, ancl, nod, ari, crs_o = cargar_entorno_base(BBOX)
+        df_h = preparar_datos_historicos(RUTA_HISTORICO, BBOX, crs_o, edif, G_p, nod, ari)
+        mod_c, esc, mod_k, cols_f = entrenar_cerebro_ia(df_h)
         st.session_state.update({
-            'G_proyectado': G_proyectado,
-            'edificios_fusionados': edificios_fusionados,
-            'anclas_proyectadas': anclas_proyectadas,
-            'nodos_gdf': nodos_gdf,
-            'aristas_gdf': aristas_gdf,
-            'crs_obj': crs_obj,
-            'df_historico_procesado': df_historico_procesado,
-            'modelo_cat': modelo_cat,
-            'escalador': escalador,
-            'modelo_kmeans': modelo_kmeans,
-            'cols_fisicas': cols_fisicas,
+            'G_proyectado': G_p, 'edificios_fusionados': edif, 'anclas_proyectadas': ancl,
+            'nodos_gdf': nod, 'aristas_gdf': ari, 'crs_obj': crs_o, 'df_historico_procesado': df_h,
+            'modelo_cat': mod_c, 'escalador': esc, 'modelo_kmeans': mod_k, 'cols_fisicas': cols_f,
             'data_cargada': True
         })
-        sistema_listo = True
-    else:
-        # Si ya estaban cargadas, las recuperamos para que el código las vea
-        G_proyectado = st.session_state.G_proyectado
-        edificios_fusionados = st.session_state.edificios_fusionados
-        anclas_proyectadas = st.session_state.anclas_proyectadas
-        nodos_gdf = st.session_state.nodos_gdf
-        aristas_gdf = st.session_state.aristas_gdf
-        crs_obj = st.session_state.crs_obj
-        df_historico_procesado = st.session_state.df_historico_procesado
-        modelo_cat = st.session_state.modelo_cat
-        escalador = st.session_state.escalador
-        modelo_kmeans = st.session_state.modelo_kmeans
-        cols_fisicas = st.session_state.cols_fisicas
-        sistema_listo = True
+
+sistema_listo = True
+
 # ==============================================================================
-# CAPA 4: FRONT-END "REPORTEADOR PRO" (Soporte para Inferencia Morfología)
+# CAPA 4: FRONT-END "REPORTEADOR PRO"
 # ==============================================================================
 if sistema_listo:
-    st.title("🎯 Sistema de Inteligencia Territorial")
-    
-    if 'coords' not in st.session_state:
-        st.session_state.coords = {"lat": 20.605192, "lng": -100.382373}
-    if 'analisis_listo' not in st.session_state:
-        st.session_state.analisis_listo = False
+    st.title("🎯 Oráculo Urbano: Inteligencia Territorial")
+    if 'coords' not in st.session_state: st.session_state.coords = {"lat": 20.605192, "lng": -100.382373}
+    if 'analisis_listo' not in st.session_state: st.session_state.analisis_listo = False
 
     col_mapa, col_stats = st.columns([2, 1])
-
+    
     with col_mapa:
-        lat_actual, lon_actual = st.session_state.coords["lat"], st.session_state.coords["lng"]
-        m = folium.Map(location=[lat_actual, lon_actual], zoom_start=18, tiles='CartoDB positron')
-        folium.Marker([lat_actual, lon_actual], 
-                      icon=folium.Icon(color='purple', icon='star'),
-                      popup="Punto de Análisis").add_to(m)
-        
-        mapa_interactivo = st_folium(m, width="100%", height=550, key="selector_urbano")
-
-        if mapa_interactivo.get("last_clicked"):
-            click_lat = mapa_interactivo["last_clicked"]["lat"]
-            click_lng = mapa_interactivo["last_clicked"]["lng"]
-            if click_lat != st.session_state.coords["lat"]:
-                st.session_state.coords = {"lat": click_lat, "lng": click_lng}
-                st.session_state.analisis_listo = False 
-                st.rerun() 
+        lat_a, lon_a = st.session_state.coords["lat"], st.session_state.coords["lng"]
+        m = folium.Map(location=[lat_a, lon_a], zoom_start=18, tiles='CartoDB positron')
+        folium.Marker([lat_a, lon_a], icon=folium.Icon(color='purple', icon='star')).add_to(m)
+        mapa_i = st_folium(m, width="100%", height=550, key="selector_urbano")
+        if mapa_i.get("last_clicked"):
+            c_lat, c_lng = mapa_i["last_clicked"]["lat"], mapa_i["last_clicked"]["lng"]
+            if c_lat != st.session_state.coords["lat"]:
+                st.session_state.coords = {"lat": c_lat, "lng": c_lng}
+                st.session_state.analisis_listo = False
+                st.rerun()
 
     with col_stats:
         st.subheader("🧐 Centro de Diagnóstico")
-        curr_lat = st.session_state.coords["lat"]
-        curr_lon = st.session_state.coords["lng"]
-        
-        st.write(f"**Ubicación:** `{curr_lat:.6f}, {curr_lon:.6f}`")
-        
+        curr_lat, curr_lon = st.session_state.coords["lat"], st.session_state.coords["lng"]
         if st.button("🚀 Ejecutar Estudio Completo", type="primary", use_container_width=True):
-            with st.spinner("Analizando micro-morfología y flujos..."):
-                giros_reporte = {
-                    "722511": "Restaurante Gourmet", 
-                    "611110": "Academia / Educación",
-                    "446110": "Farmacia", 
-                    "812110": "Salón de Belleza / Spa",
-                    "461110": "Mini-Super / Conveniencia", 
-                    "722518": "Cocina Económica / Antojitos"
-                }
-                
-                resultados = []
-                # Realizamos la primera corrida para obtener datos de contexto del predio
-                for cod, nom in giros_reporte.items():
-                    # Recibimos: [probs], {contexto_predio}, {vars_sim}
+            with st.spinner("Analizando micro-morfología..."):
+                giros = {"722511": "Restaurante Gourmet", "611110": "Academia", "446110": "Farmacia", "812110": "Spa/Belleza", "461110": "Mini-Super", "722518": "Cocina Económica"}
+                res = []
+                for cod, nom in giros.items():
                     probs, contexto, vars_sim = evaluar_local_comercial(curr_lat, curr_lon, cod)
-                    resultados.append({"Giro": nom, "Viabilidad (%)": round(probs[1] * 100, 1)})
-                
-                # Guardamos resultados y contexto en el estado de la sesión
-                st.session_state.df_resultados = pd.DataFrame(resultados).sort_values(by="Viabilidad (%)", ascending=False)
+                    res.append({"Giro": nom, "Viabilidad (%)": round(probs[1] * 100, 1)})
+                st.session_state.df_resultados = pd.DataFrame(res).sort_values(by="Viabilidad (%)", ascending=False)
                 st.session_state.contexto_predio = contexto
                 st.session_state.analisis_listo = True
 
         if st.session_state.analisis_listo:
             st.markdown("---")
-            tab1, tab2, tab3 = st.tabs(["🏗️ Morfología", "👥 Segmentación", "📋 Dictamen"])
-
-            with tab1:
-                st.write("### Etapa 1: Análisis de Infraestructura")
-                ctx = st.session_state.contexto_predio
-                
-                c1, c2 = st.columns(2)
-                c1.metric("Tipo de Predio", ctx['tipo_predio'])
-                c2.metric("Masa Crítica", f"{ctx['masa_critica']:.0f} m²")
-                
+            t1, t2, t3 = st.tabs(["🏗️ Morfología", "👥 Segmentación", "📋 Dictamen"])
+            ctx = st.session_state.contexto_predio
+            with t1:
+                st.metric("Tipo de Predio", ctx['tipo_predio'])
+                st.metric("Masa Crítica", f"{ctx['masa_critica']:.0f} m²")
                 st.write(f"**Trama Urbana:** {ctx['conectividad']}")
-                st.caption("Detección basada en el algoritmo de intersección de huellas (Overture Maps) y densidad DENUE.")
-
-            with tab2:
-                st.write("### Etapa 2: Perfil Socioeconómico")
-                ctx = st.session_state.contexto_predio
-                
-                st.subheader(f"NSE Deducido: **{ctx['segmento_nse']}**")
-                
-                if ctx['es_informal']:
-                    st.warning("⚠️ **Alerta de Entorno:** Se detecta configuración de mercado informal o tianguis. Las probabilidades han sido ajustadas para giros de alta rotación.")
-                else:
-                    st.success("✅ **Entorno Consolidado:** Infraestructura comercial permanente detectada.")
-
-            with tab3:
-                st.write("### Etapa 3: Resultados de Viabilidad")
+            with t2:
+                st.subheader(f"NSE Deducido: {ctx['segmento_nse']}")
+                if ctx['es_informal']: st.warning("⚠️ Zona de Mercado Informal Detectada")
+            with t3:
                 st.dataframe(st.session_state.df_resultados, use_container_width=True, hide_index=True)
-                
-                # Gráfico visual para el reporte
-                st.bar_chart(st.session_state.df_resultados.set_index("Giro"))
-                
-                # Botón de Descarga
                 csv = st.session_state.df_resultados.to_csv(index=False).encode('utf-8-sig')
-                st.download_button(
-                    label="📥 Descargar Reporte Ejecutivo (CSV)",
-                    data=csv,
-                    file_name=f"estudio_geomarketing_{curr_lat:.4f}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
+                st.download_button("📥 Descargar Reporte CSV", data=csv, file_name=f"estudio_{curr_lat:.4f}.csv", mime="text/csv")
