@@ -1,7 +1,7 @@
 # ==============================================================================
 # CAPA 1: IMPORTACIONES Y CONFIGURACIÓN BASE
 # ==============================================================================
-import streamlit as st
+import streamlit as ste
 import pandas as pd
 import geopandas as gpd
 import numpy as np
@@ -218,15 +218,15 @@ def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
     
     prob_exito = min(max(prob_exito, 0.05), 0.96)
     
-    contexto = {
-        'tipo_predio': tipo_predio, 
-        'segmento_nse': seg_nse,
-        'patron_flujo': ctx_g['patron_flujo'],
-        'dias_pico': dias_pico,
-        'masa_critica': masa_critica,
-        'potencial_renta': "Alto" if valor_temporal > 1.3 else "Moderado",
-        'es_informal': (centralidad_val > 0.008 and masa_critica < 2000)
-    }
+   contexto = {
+    'tipo_predio': tipo_predio, 
+    'segmento_nse': seg_nse,
+    'patron_flujo': ctx_g['patron_flujo'], # <-- Vital
+    'dias_pico': dias_pico,              # <-- Esta es la que falta
+    'masa_critica': masa_critica,
+    'potencial_renta': "Alto" if valor_temporal > 1.3 else "Moderado",
+    'conectividad': "Flujo Alto" if centralidad_val > 0.006 else "Local"
+}
     
     return [1-prob_exito, prob_exito], contexto, X_sim.iloc[0]
 # ==============================================================================
