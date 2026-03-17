@@ -28,7 +28,7 @@ RUTA_HISTORICO = "denue_inegi_222_.csv"
 G_CLIENT = googlemaps.Client(key='AIzaSyDbysfcLFSNOruYHHaQgGhbqtBllqdtlY0')
 
 # ==============================================================================
-# CAPA 2: EL CEREBRO (IA + GOOGLE + TEMPORALIDAD + ANTI-FALSOS POSITIVOS)
+# CAPA 2: EL CEREBRO (IA + GOOGLE + ANCLAS URBANAS)
 # ==============================================================================
 
 @st.cache_resource
@@ -84,46 +84,36 @@ def entrenar_cerebro_ia(_df):
     return cat, sc, km, vars_f
 
 def obtener_contexto_detallado_google(lat, lon):
-    """Extrae Semántica, Tráfico (reseñas) y Patrones Temporales"""
     try:
-        res = G_CLIENT.places_nearby(location=(lat, lon), radius=100)
+        res = G_CLIENT.places_nearby(location=(lat, lon), radius=120)
         tipos, precios, patron = [], [], "Comercio Mixto"
-        total_reviews = 0
-        
+        max_rating_zona = 0
         for p in res.get('results', []):
             t_list = p.get('types', [])
             tipos.extend(t_list)
             if 'price_level' in p: precios.append(p['price_level'])
-            if 'user_ratings_total' in p: total_reviews += p['user_ratings_total']
-            
+            if 'user_ratings_total' in p: 
+                if p['user_ratings_total'] > max_rating_zona: max_rating_zona = p['user_ratings_total']
             if any(x in t_list for x in ['night_club', 'bar', 'restaurant']): patron = "Vida Nocturna / Gastronómico"
             elif any(x in t_list for x in ['office', 'bank', 'government_office']): patron = "Corporativo (Lun-Vie)"
-            
         es_m = any(x in tipos for x in ['shopping_mall', 'department_store'])
         es_gas = 'gas_station' in tipos
         nse_g = "Premium" if (precios and (sum(precios)/len(precios)) >= 2.2) else None
-        
-        return {'es_mall': es_m, 'es_gasolineria': es_gas, 'nse_google': nse_g, 'patron_flujo': patron, 'trafico_reviews': total_reviews}
+        return {'es_mall': es_m, 'es_gasolineria': es_gas, 'nse_google': nse_g, 'patron_flujo': patron, 'max_reviews': max_rating_zona}
     except:
-        return {'es_mall': False, 'es_gasolineria': False, 'nse_google': None, 'patron_flujo': "No detectado", 'trafico_reviews': 0}
+        return {'es_mall': False, 'es_gasolineria': False, 'nse_google': None, 'patron_flujo': "No detectado", 'max_reviews': 0}
 
-def clasificar_micro_entorno(p_geom, edif, denue, ctx_g):
-    """Filtros Anti-Falsos Positivos"""
+def clasificar_micro_entorno(p_geom, edif, denue, ctx_g, cerca_escuela):
+    # Ya recibe los 5 datos correctamente
     if ctx_g['es_gasolineria']: return "Estación de Servicio / Nodo Conveniencia"
     if ctx_g['es_mall']: return "Plaza Comercial / Retail Hub"
-    
     actual = edif[edif.intersects(p_geom)]
     if actual.empty: return "Lote Baldío / Espacio Abierto"
-    
     area = actual.geometry.iloc[0].area
     locales = len(denue[denue.intersects(p_geom.buffer(80))])
-    
     if area > 1500: 
-        # Si es enorme pero nadie habla de él en Google (< 50 reviews) = Decadencia
-        if ctx_g['trafico_reviews'] < 50:
-            return "Gran Superficie (Subutilizada / Decadencia)"
+        if ctx_g['max_reviews'] < 15 and not cerca_escuela: return "Gran Superficie (Subutilizada / Decadencia)"
         return "Lifestyle Center / Zona Alto Valor" if locales > 3 else "Tienda Ancla / Big Box"
-        
     return "Corredor Comercial (Grano Fino)" if area < 500 else "Uso Mixto / Habitacional"
 
 def evaluar_local_comercial(lat, lon, giro_scian):
@@ -140,12 +130,9 @@ def evaluar_local_comercial(lat, lon, giro_scian):
     idx_n = nod.distance(p_geom).idxmin()
     cent_v = nod.loc[idx_n, 'betweenness'] if 'betweenness' in nod.columns else 0.001
     
-    # =========================================================================
-    # 1. RADAR DE ANCLAS URBANAS (Desmenuzando el entorno)
-    # =========================================================================
     escuelas = ancl[ancl['amenity'].isin(['school', 'university'])]
     hospitales = ancl[ancl['amenity'].isin(['hospital', 'clinic'])]
-    mercados = ancl[ancl['amenity'].isin(['marketplace', 'bus_station'])] # Mercados y terminales actúan similar
+    mercados = ancl[ancl['amenity'].isin(['marketplace', 'bus_station'])]
     
     dist_escuela = escuelas.distance(p_geom).min() if not escuelas.empty else 1000
     dist_hospital = hospitales.distance(p_geom).min() if not hospitales.empty else 1000
@@ -155,7 +142,6 @@ def evaluar_local_comercial(lat, lon, giro_scian):
     cerca_hospital = dist_hospital < 150
     cerca_mercado = dist_mercado < 150
 
-    # Saturación de Competencia Directa
     l_m_g = df_h[df_h['codigo_act'] == str(giro_scian)]
     dist_c, sat = (l_m_g.distance(p_geom).min(), len(l_m_g.clip(p_geom.buffer(300)))) if not l_m_g.empty else (800, 0)
     
@@ -163,64 +149,50 @@ def evaluar_local_comercial(lat, lon, giro_scian):
     nse = ctx_g['nse_google'] if ctx_g['nse_google'] else ('Premium' if masa > 6000 else ('Medio' if masa > 1800 else 'Popular'))
     es_informal = True if (cent_v > 0.005 and nse == 'Popular') else False
 
-    # =========================================================================
-    # 2. JERARQUÍA DE FLUJO Y ANCLA DOMINANTE
-    # =========================================================================
     patron_flujo = ctx_g['patron_flujo']
     dias_pico = "Sábados y Domingos"
     ancla_dominante = "Ninguna (Flujo Orgánico)"
-    mult_ancla = 1.0 # Multiplicador específico por ancla y giro
+    mult_ancla = 1.0 
 
-    # Regla 1: Hospitales dominan por su flujo 24/7 y necesidades urgentes
     if cerca_hospital:
         ancla_dominante = "Hospital / Centro de Salud"
         patron_flujo = "Flujo Constante (Salud/Urgencias)"
         dias_pico = "Lunes a Domingo (24/7)"
-        if giro_scian == '446110': mult_ancla = 2.2 # Farmacias explotan aquí
-        if giro_scian == '722518': mult_ancla = 1.5 # Cocina económica para familiares/staff
-        if giro_scian in ['812110', '611110', '722511']: mult_ancla = 0.4 # Spas, Academias y Gourmet mueren aquí
-        
-    # Regla 2: Mercados y Terminales generan flujo masivo pero transitorio/informal
+        if giro_scian == '446110': mult_ancla = 2.2 
+        if giro_scian == '722518': mult_ancla = 1.5 
+        if giro_scian in ['812110', '611110', '722511']: mult_ancla = 0.4 
     elif cerca_mercado:
         ancla_dominante = "Mercado / Nodo de Transporte"
-        nse = 'Popular' if nse == 'Premium' else nse # Degrada lujo a nivel calle
+        nse = 'Popular' if nse == 'Premium' else nse 
         es_informal = True
-        if giro_scian == '461110': mult_ancla = 1.8 # Mini-super (Compras de paso)
-        if giro_scian == '722518': mult_ancla = 1.4 # Fondas
-        if giro_scian in ['812110', '722511']: mult_ancla = 0.3 # Adiós lujo
-        
-    # Regla 3: Escuelas generan picos muy marcados
+        if giro_scian == '461110': mult_ancla = 1.8 
+        if giro_scian == '722518': mult_ancla = 1.4 
+        if giro_scian in ['812110', '722511']: mult_ancla = 0.3 
     elif cerca_escuela:
         ancla_dominante = "Centro Educativo"
         nse = 'Medio' if nse == 'Premium' else nse
         patron_flujo = "Escolar / Estudiantil"
         dias_pico = "Lunes a Viernes (Matutino/Vespertino)"
-        if giro_scian in ['461110', '722518']: mult_ancla = 1.6 # Papelerías(si hubiera)/Snacks/Fondas
-        if giro_scian == '611110': mult_ancla = 1.5 # Academias de regularización/idiomas
-        if str(giro_scian).startswith('722511'): mult_ancla = 0.3 # Gourmet
-        
-    # Regla 4: Oficinas (Detectadas por Google, no por OSM)
+        if giro_scian in ['461110', '722518']: mult_ancla = 1.6 
+        if giro_scian == '611110': mult_ancla = 1.5 
+        if str(giro_scian).startswith('722511'): mult_ancla = 0.3 
     elif patron_flujo == "Corporativo (Lun-Vie)":
         ancla_dominante = "Zona Corporativa"
         dias_pico = "Lunes a Viernes"
-        if giro_scian in ['722518', '461110']: mult_ancla = 1.6 # Comida oficinistas
-        if giro_scian == '611110': mult_ancla = 0.5 # Academias sufren en zonas puramente de oficinas
-
+        if giro_scian in ['722518', '461110']: mult_ancla = 1.6 
+        if giro_scian == '611110': mult_ancla = 0.5 
     elif patron_flujo == "Vida Nocturna / Gastronómico":
         dias_pico = "Jueves a Sábado (Noche)"
         if giro_scian in ['722511']: mult_ancla = 1.5
 
-    # --- PREDICCIÓN IA BASE ---
     df_cl = pd.DataFrame([[dist_c, masa, dist_a, dist_e]], columns=c_f)
     tribu = f"Perfil_{mod_k.predict(esc.transform(df_cl))[0]}"
     X = pd.DataFrame([{'codigo_act': str(giro_scian), 'dist_competidor_m': dist_c, 'm2_construccion_50m': masa, 'dist_ancla_urbana_m': dist_a, 'dist_esquina_m': dist_e, 'tipologia_urbana': tribu, 'centralidad_flujo': cent_v, 'segmento_nse': nse}])
     p_base = mod_c.predict_proba(X)[0][1]
     
-    # --- FRICCIÓN DE INFORMALIDAD Y SATURACIÓN ---
-    if es_informal and giro_scian == '461110': mult_ancla *= 0.65 # Mini-Super formal pierde contra tianguis
-    penalizacion_sat = (0.75 ** sat) if sat > 0 else 1.15 # Océano Rojo vs Océano Azul
+    if es_informal and giro_scian == '461110': mult_ancla *= 0.65 
+    penalizacion_sat = (0.75 ** sat) if sat > 0 else 1.15 
 
-    # Cálculo Final
     p_ex = p_base * mult_ancla * penalizacion_sat
     p_ex = min(max(p_ex, 0.05), 0.96) 
     
