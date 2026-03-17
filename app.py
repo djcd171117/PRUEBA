@@ -18,6 +18,7 @@ from sklearn.model_selection import train_test_split
 import overturemaps
 from shapely import wkb
 import base64
+import googlemaps 
 
 st.set_page_config(page_title="Motor Predictivo PropTech", layout="wide")
 
@@ -27,30 +28,29 @@ RUTA_HISTORICO = "denue_inegi_222_.csv" # Tu DENUE del pasado
 RUTA_ACTUAL = "denue_inegi_22_.csv"     # Tu DENUE del presente
 
 # ==============================================================================
-# CAPA 2: EL CEREBRO (FUNCIONES CACHEADAS E INFERENCIA)
+# CAPA 2: EL CEREBRO (IA + GOOGLE PLACES + INFERENCIA)
 # ==============================================================================
+import googlemaps
+
+# Configuración de Google Places (Usa el secreto de Streamlit o tu variable)
+# Para producción, usa: st.secrets["GOOGLE_API_KEY"]
+G_CLIENT = googlemaps.Client(key='AIzaSyDbysfcLFSNOruYHHaQgGhbqtBllqdtlY0')
 
 @st.cache_resource
 def cargar_entorno_base(bbox):
     """Descarga y proyecta las capas base de la ciudad."""
-    # Red vial y Grafos
     G = ox.graph_from_bbox(bbox=bbox, network_type='walk', simplify=True)
     G_proj = ox.project_graph(G)
     crs_objetivo = G_proj.graph['crs']
     
-    # Huellas de Edificios (OSM + Overture)
     osm = ox.features_from_bbox(bbox=bbox, tags={'building': True}).to_crs(crs_objetivo)
     tabla_ia = overturemaps.record_batch_reader("building", bbox).read_all().to_pandas()
     tabla_ia["geometry"] = tabla_ia["geometry"].apply(wkb.loads)
     ia = gpd.GeoDataFrame(tabla_ia, geometry="geometry", crs="EPSG:4326").to_crs(crs_objetivo)
     edificios_fusionados = gpd.GeoDataFrame(pd.concat([osm[['geometry']], ia[['geometry']]], ignore_index=True), crs=crs_objetivo)
     
-    # Equipamiento Urbano (Anclas)
     anclas = ox.features_from_bbox(bbox=bbox, tags={'amenity': ['school', 'university', 'hospital', 'clinic', 'marketplace', 'bus_station']}).to_crs(crs_objetivo)
-    
-    # Red de Nodos y Aristas
     nodos_gdf, aristas_gdf = ox.graph_to_gdfs(G_proj)
-    aristas_gdf['highway_clean'] = aristas_gdf['highway'].apply(lambda x: x[0] if isinstance(x, list) else x)
     
     return G_proj, edificios_fusionados, anclas, nodos_gdf, aristas_gdf, crs_objetivo
 
@@ -62,37 +62,24 @@ def preparar_datos_historicos(ruta_hist, bbox, _crs_objetivo, _edificios, _G_pro
     gdf_hist['codigo_act'] = gdf_hist['codigo_act'].astype(str)
     gdf_hist = gdf_hist[gdf_hist['codigo_act'].str.startswith(('44', '46', '72', '81'))].copy()
     
-    # Supervivencia Sintética
     gdf_hist['sobrevivio'] = np.random.choice([1, 0], size=len(gdf_hist), p=[0.7, 0.3])
-    
-    # Distancia a Competidor
     coords = np.array(list(zip(gdf_hist.geometry.x, gdf_hist.geometry.y)))
     gdf_hist['dist_competidor_m'] = cKDTree(coords).query(coords, k=2)[0][:, 1]
     
-    # Masa Crítica (Morfología)
-    buffers = gdf_hist.copy(); buffers['geometry'] = buffers.geometry.buffer(50)
     _edificios['area_m2'] = _edificios.geometry.area
+    buffers = gdf_hist.copy(); buffers['geometry'] = buffers.geometry.buffer(50)
     inter = gpd.sjoin(_edificios[['geometry', 'area_m2']], buffers, how="inner", predicate="intersects")
     masa = inter.groupby('index_right')['area_m2'].sum().reset_index().rename(columns={'index_right': 'id_local', 'area_m2': 'm2_construccion_50m'})
     gdf_hist['id_local'] = gdf_hist.index
     gdf_hist = gdf_hist.merge(masa, on='id_local', how='left').fillna({'m2_construccion_50m': 0})
     
-    # Centralidad de Flujo
     G_undirected = _G_proj.to_undirected()
     centralidad = nx.betweenness_centrality(G_undirected, k=50, weight='length', seed=42)
     nx.set_node_attributes(_G_proj, centralidad, 'betweenness')
     nodos_con_cent, _ = ox.graph_to_gdfs(_G_proj)
     _, idx_nodo = cKDTree(np.array(list(zip(_nodos.geometry.x, _nodos.geometry.y)))).query(coords, k=1)
     gdf_hist['centralidad_flujo'] = nodos_con_cent.iloc[idx_nodo]['betweenness'].values
-    
-    # Segmentación NSE
     gdf_hist['segmento_nse'] = pd.cut(gdf_hist['m2_construccion_50m'], bins=[-1, 1500, 6000, 1000000], labels=['Popular', 'Medio', 'Premium'])
-    
-    # Variables de Control
-    gdf_hist['jerarquia_vial'] = "residential"
-    gdf_hist['frontage_visible'] = 1
-    gdf_hist['dist_ancla_urbana_m'] = 150.0
-    gdf_hist['dist_esquina_m'] = 20.0
     
     return gdf_hist
 
@@ -100,6 +87,9 @@ def preparar_datos_historicos(ruta_hist, bbox, _crs_objetivo, _edificios, _G_pro
 def entrenar_cerebro_ia(_df_entrenamiento):
     """Crea los modelos de Clustering y Clasificación."""
     variables_fisicas = ['dist_competidor_m', 'm2_construccion_50m', 'dist_ancla_urbana_m', 'dist_esquina_m']
+    _df_entrenamiento['dist_ancla_urbana_m'] = 150.0
+    _df_entrenamiento['dist_esquina_m'] = 20.0
+    
     scaler = StandardScaler()
     datos_escalados = scaler.fit_transform(_df_entrenamiento[variables_fisicas])
     kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
@@ -114,60 +104,73 @@ def entrenar_cerebro_ia(_df_entrenamiento):
     
     return modelo, scaler, kmeans, variables_fisicas
 
-def clasificar_micro_entorno(p_geom, edificios, denue_puntos):
-    """Detección de uso de suelo real mediante intersección de polígonos."""
+def obtener_contexto_google(lat, lon):
+    """Detección semántica vía Google Places API."""
+    try:
+        res = G_CLIENT.places_nearby(location=(lat, lon), radius=60)
+        tipos, precios = [], []
+        for p in res.get('results', []):
+            tipos.extend(p.get('types', []))
+            if 'price_level' in p: precios.append(p['price_level'])
+        
+        es_mall = any(x in tipos for x in ['shopping_mall', 'department_store'])
+        nse_val = "Premium" if (len(precios) > 0 and (sum(precios)/len(precios)) >= 2.2) else None
+        return es_mall, nse_val
+    except:
+        return False, None
+
+def clasificar_micro_entorno(p_geom, edificios, denue_puntos, es_mall_google):
+    """Detección de uso de suelo híbrida (Geometría + Google)."""
+    if es_mall_google: return "Plaza Comercial (Confirmado Google)"
+    
     edificio_actual = edificios[edificios.intersects(p_geom)]
-    if edificio_actual.empty:
-        return "Lote Baldío / Espacio Abierto"
+    if edificio_actual.empty: return "Lote Baldío / Espacio Abierto"
     
     huella_geom = edificio_actual.geometry.iloc[0]
     area_huella = huella_geom.area
-    locales_en_huella = denue_puntos[denue_puntos.intersects(huella_geom)]
-    num_locales = len(locales_en_huella)
+    num_locales = len(denue_puntos[denue_puntos.intersects(p_geom.buffer(80))])
     
-    if area_huella > 2000 and num_locales > 4:
-        return "Plaza Comercial / Shopping Center"
-    elif area_huella > 2000 and num_locales <= 2:
-        return "Nave Industrial / Bodega"
-    elif area_huella < 400 and num_locales >= 1:
-        return "Local de Corredor (Grano Fino)"
-    else:
-        return "Uso Mixto / Habitacional"
+    if area_huella > 1500:
+        return "Plaza Comercial / Shopping Center" if num_locales > 3 else "Gran Superficie / Nave"
+    return "Local de Corredor (Grano Fino)" if area_huella < 500 else "Uso Mixto / Habitacional"
 
 def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
-    """Inferencia Maestra."""
-    # Recuperamos del estado
+    """Inferencia Maestra Enriquecida."""
+    # 1. Recuperar Estado
     crs_obj = st.session_state.crs_obj
-    edificios_fusionados = st.session_state.edificios_fusionados
-    anclas_proyectadas = st.session_state.anclas_proyectadas
-    nodos_gdf = st.session_state.nodos_gdf
-    df_historico_procesado = st.session_state.df_historico_procesado
+    edificios = st.session_state.edificios_fusionados
+    anclas = st.session_state.anclas_proyectadas
+    nodos = st.session_state.nodos_gdf
+    df_hist = st.session_state.df_historico_procesado
     modelo_cat = st.session_state.modelo_cat
     modelo_kmeans = st.session_state.modelo_kmeans
     escalador = st.session_state.escalador
     cols_fisicas = st.session_state.cols_fisicas
 
+    # 2. Geometría y Google
     p_geom = gpd.GeoSeries([Point(lon, lat)], crs="EPSG:4326").to_crs(crs_obj).geometry[0]
+    es_mall_g, nse_g = obtener_contexto_google(lat, lon)
     
-    # Atributos Espaciales
-    masa_critica = edificios_fusionados.clip(p_geom.buffer(50)).area.sum()
-    dist_ancla = anclas_proyectadas.distance(p_geom).min()
-    dist_esq = nodos_gdf.distance(p_geom).min()
+    # 3. Atributos Espaciales
+    masa_critica = edificios.clip(p_geom.buffer(50)).area.sum()
+    dist_ancla = anclas.distance(p_geom).min()
+    dist_esq = nodos.distance(p_geom).min()
+    idx_nodo = nodos.distance(p_geom).idxmin()
+    centralidad_val = nodos.loc[idx_nodo, 'betweenness'] if 'betweenness' in nodos.columns else 0.001
     
-    # Análisis de Contexto
-    tipo_predio = clasificar_micro_entorno(p_geom, edificios_fusionados, df_historico_procesado)
-    idx_nodo = nodos_gdf.distance(p_geom).idxmin()
-    centralidad_val = nodos_gdf.loc[idx_nodo, 'betweenness'] if 'betweenness' in nodos_gdf.columns else 0.001
-    conectividad = "Abierta (Flujo Alto)" if centralidad_val > 0.006 else "Restringida (Privada / Social)"
-    
-    # Competencia
-    locales_comp = df_historico_procesado[df_historico_procesado['codigo_act'].str.startswith(str(giro_scian)[:3])]
-    dist_comp = locales_comp.distance(p_geom).min() if not locales_comp.empty else 500
-    
-    seg_nse = 'Premium' if masa_critica > 6000 else ('Medio' if masa_critica > 1500 else 'Popular')
-    es_informal = 1 if (centralidad_val > 0.008 and masa_critica < 2000) else 0
+    # 4. SATURACIÓN ESPECÍFICA (Varianza por Giro)
+    locales_mismo_giro = df_hist[df_hist['codigo_act'] == str(giro_scian)]
+    if not locales_mismo_giro.empty:
+        dist_comp = locales_mismo_giro.distance(p_geom).min()
+        saturacion = len(locales_mismo_giro.clip(p_geom.buffer(300)))
+    else:
+        dist_comp, saturacion = 800, 0
 
-    # Predicción
+    # 5. Clasificación y NSE
+    tipo_predio = clasificar_micro_entorno(p_geom, edificios, df_hist, es_mall_g)
+    seg_nse = nse_g if nse_g else ('Premium' if masa_critica > 6000 else ('Medio' if masa_critica > 1800 else 'Popular'))
+    
+    # 6. Predicción IA
     df_cluster = pd.DataFrame([[dist_comp, masa_critica, dist_ancla, dist_esq]], columns=cols_fisicas)
     tribu_val = f"Perfil_{modelo_kmeans.predict(escalador.transform(df_cluster))[0]}"
     
@@ -179,18 +182,17 @@ def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
     
     prob_exito = modelo_cat.predict_proba(X_sim)[0][1]
     
-    # Ajustes de Realismo
-    if tipo_predio == "Plaza Comercial / Shopping Center": prob_exito *= 1.25
-    if tipo_predio == "Lote Baldío / Espacio Abierto": prob_exito *= 0.6
-    if es_informal and str(giro_scian).startswith(('722511')): prob_exito *= 0.3
+    # 7. AJUSTES DE REALISMO LÓGICO
+    if "Plaza" in tipo_predio: prob_exito *= 1.3
+    if saturacion > 3: prob_exito *= 0.8  # Penalizar por saturación del mismo giro
+    if seg_nse == "Premium" and str(giro_scian).startswith('722518'): prob_exito *= 0.4 # Cocina económica en zona lujo
     
-    contexto_predio = {
-        'tipo_predio': tipo_predio, 'conectividad': conectividad, 
-        'masa_critica': masa_critica, 'segmento_nse': seg_nse, 'es_informal': es_informal
+    contexto = {
+        'tipo_predio': tipo_predio, 'conectividad': "Flujo Alto" if centralidad_val > 0.006 else "Local",
+        'masa_critica': masa_critica, 'segmento_nse': seg_nse, 'es_informal': (centralidad_val > 0.008 and masa_critica < 2000)
     }
     
-    return [1-prob_exito, prob_exito], contexto_predio, X_sim.iloc[0]
-
+    return [1-min(prob_exito, 0.98), min(prob_exito, 0.98)], contexto, X_sim.iloc[0]
 # ==============================================================================
 # CAPA 3: INICIALIZACIÓN (SISTEMA)
 # ==============================================================================
