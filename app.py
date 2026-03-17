@@ -20,7 +20,7 @@ st.set_page_config(page_title="Oráculo Urbano PropTech", layout="wide")
 # CONFIGURACIÓN DE LLAVES (Usa Secrets en producción)
 BBOX = (-100.409632, 20.584369, -100.371437, 20.618641)
 G_CLIENT = googlemaps.Client(key='AIzaSyDbysfcLFSNOruYHHaQgGhbqtBllqdtlY0')
-genai.configure(api_key="TU_API_KEY_DE_GEMINI") 
+genai.configure(api_key="gen-lang-client-0839697959") 
 
 # ==============================================================================
 # CAPA 2: MOTOR ESPACIAL Y RADIOGRAFÍA
