@@ -17,18 +17,21 @@ from catboost import CatBoostClassifier
 import overturemaps
 from shapely import wkb
 import googlemaps 
+import google.generativeai as genai
 
 # CONFIGURACIÓN DE PÁGINA (Debe ser lo primero)
 st.set_page_config(page_title="Motor Predictivo PropTech", layout="wide")
 
-# CONSTANTES GLOBALES
+# CONSTANTES GLOBALES Y LLAVES API
 BBOX = (-100.409632, 20.584369, -100.371437, 20.618641)
 RUTA_HISTORICO = "denue_inegi_222_.csv" 
-# USA TU LLAVE DE GOOGLE AQUÍ (Recomendado pasarlo a st.secrets después)
+
+# Llaves de APIs (Idealmente pásalas a st.secrets en producción)
 G_CLIENT = googlemaps.Client(key='AIzaSyDbysfcLFSNOruYHHaQgGhbqtBllqdtlY0')
+genai.configure(api_key="AIzaSyAA6jOtI3YoCXQstAPTSz4Gw_PccEOmmJc") # <--- COLOCA TU LLAVE DE GEMINI AQUÍ
 
 # ==============================================================================
-# CAPA 2: EL CEREBRO (IA + GOOGLE + AGLOMERACIÓN Y DIVERSIDAD)
+# CAPA 2: EL CEREBRO (IA + GOOGLE + AGLOMERACIÓN + IA GENERATIVA)
 # ==============================================================================
 
 @st.cache_resource
@@ -167,39 +170,22 @@ def evaluar_local_comercial(lat, lon, giro_scian):
     X = pd.DataFrame([{'codigo_act': str(giro_scian), 'dist_competidor_m': dist_c, 'm2_construccion_50m': masa, 'dist_ancla_urbana_m': dist_a, 'dist_esquina_m': dist_e, 'tipologia_urbana': tribu, 'centralidad_flujo': cent_v, 'segmento_nse': nse}])
     p_base = mod_c.predict_proba(X)[0][1]
 
-    # =========================================================================
-    # NUEVO MOTOR: TEORÍA DE AGLOMERACIÓN VS CANIBALIZACIÓN Y VITALIDAD
-    # =========================================================================
-    
-    # 1. Fuerza de Mercado: ¿Aglomeración o Canibalización?
-    giros_conveniencia = ['461110', '446110'] # Mini-super, Farmacia
-    giros_aglomeracion = ['722511', '722518', '812110', '611110'] # Restaurantes, Spas, Academias
+    # --- MOTOR TEÓRICO: AGLOMERACIÓN VS CANIBALIZACIÓN ---
+    giros_conveniencia = ['461110', '446110'] 
+    giros_aglomeracion = ['722511', '722518', '812110', '611110'] 
     
     factor_competencia = 1.0
-    
     if str(giro_scian) in giros_conveniencia:
-        # Conveniencia: Castigo exponencial puro (Canibalización)
         factor_competencia = (0.75 ** saturacion_real) if saturacion_real > 0 else 1.15
     elif str(giro_scian) in giros_aglomeracion:
-        # Destino: Curva de Clúster de Hotelling (Aglomeración positiva hasta un límite)
-        if saturacion_real == 0:
-            factor_competencia = 1.05 # Pionero
-        elif 1 <= saturacion_real <= 3:
-            factor_competencia = 1.35 # Efecto Clúster Mágico (Corredor comercial atrae flujos)
-        elif 4 <= saturacion_real <= 5:
-            factor_competencia = 1.10 # Madurez del clúster
-        else:
-            factor_competencia = 0.85 # Sobresaturación brutal
+        if saturacion_real == 0: factor_competencia = 1.05 
+        elif 1 <= saturacion_real <= 3: factor_competencia = 1.35 
+        elif 4 <= saturacion_real <= 5: factor_competencia = 1.10 
+        else: factor_competencia = 0.85 
 
-    # 2. Índice de Diversidad y Vitalidad Económica (Jane Jacobs)
     tipos_distintos_vivos = sum(1 for k, v in ctx_g['competencia_vivo'].items() if v > 0)
-    bono_diversidad = 1.0
-    if tipos_distintos_vivos >= 3:
-        bono_diversidad = 1.25 # Zona vibrante de Usos Mixtos (Sube todo el ecosistema)
-    elif tipos_distintos_vivos == 0 and masa > 2000:
-        bono_diversidad = 0.85 # Zona estéril o "Elefante Blanco"
+    bono_diversidad = 1.25 if tipos_distintos_vivos >= 3 else (0.85 if tipos_distintos_vivos == 0 and masa > 2000 else 1.0)
 
-    # 3. Reglas de Fricción y Anclas
     patron_flujo = ctx_g['patron_flujo']
     dias_pico, ancla_dominante, mult_ancla = "Sábados y Domingos", "Ninguna (Flujo Orgánico)", 1.0 
 
@@ -214,9 +200,8 @@ def evaluar_local_comercial(lat, lon, giro_scian):
         ancla_dominante, dias_pico = "Zona Corporativa", "Lunes a Viernes"
         if giro_scian in ['722518', '461110']: mult_ancla *= 1.5 
     
-    if es_informal and giro_scian == '461110': mult_ancla *= 0.65 # Fricción informal ahoga al Oxxo
+    if es_informal and giro_scian == '461110': mult_ancla *= 0.65 
 
-    # CÁLCULO FINAL INTEGRADOR
     p_ex = p_base * mult_ancla * factor_competencia * bono_diversidad
     p_ex = min(max(p_ex, 0.05), 0.96) 
     
@@ -228,41 +213,63 @@ def evaluar_local_comercial(lat, lon, giro_scian):
     }
     return [1-p_ex, p_ex], ctx, X.iloc[0]
 
+def consultar_oraculo_generativo(contexto_local):
+    """
+    Toma las variables duras del SIG/Google y pide a Gemini que deduzca
+    los mejores negocios físicos para el mercado latinoamericano.
+    """
+    try:
+        modelo = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"""
+        Actúa como un Consultor Senior de Retail y Site Selection para el mercado de México y Latinoamérica.
+        Analiza la siguiente radiografía de un predio comercial y recomiéndame los 3 mejores giros de negocio físico, 
+        considerando la informalidad, la cultura local y el contexto del entorno.
+        
+        DATOS DEL PREDIO (Radiografía SIG):
+        - Tipo de Suelo: {contexto_local.get('tipo_predio')}
+        - Nivel Socioeconómico: {contexto_local.get('segmento_nse')}
+        - Masa Crítica de Vivienda/Oficina (50m): {contexto_local.get('masa_critica')} m²
+        - Ancla Urbana Dominante: {contexto_local.get('ancla_dominante')}
+        - Días de Mayor Flujo: {contexto_local.get('dias_pico')}
+        - Patrón de Concurrencia: {contexto_local.get('patron_flujo')}
+        - Fricción Informal (Tianguis/Puestos): {'Sí' if contexto_local.get('es_informal') else 'No'}
+        - Índice de Vitalidad Comercial: {contexto_local.get('indice_vitalidad')}
+        
+        INSTRUCCIONES DE RESPUESTA:
+        1. No recomiendes giros genéricos de alto nivel. Sé hiper-específico (ej. "Boutique de uniformes escolares", "Fonda de comida corrida", "Islas de accesorios").
+        2. Explica brevemente POR QUÉ cada negocio funcionaría basándote estrictamente en los datos proporcionados.
+        3. Menciona el mayor "Riesgo o Fricción" que enfrentaría un locatario en ese punto.
+        
+        Formatea tu respuesta en Markdown limpio.
+        """
+        respuesta = modelo.generate_content(prompt)
+        return respuesta.text
+    except Exception as e:
+        return f"⚠️ No se pudo conectar con el Oráculo Generativo. Verifica tu API Key de Gemini. Detalles: {str(e)}"
+
 # ==============================================================================
 # CAPA 3: INICIALIZACIÓN (SISTEMA Y ESTADOS EN MEMORIA)
 # ==============================================================================
 if 'data_cargada' not in st.session_state:
     with st.spinner("⏳ Iniciando Gemelo Digital de Querétaro..."):
-        # 1. Carga de entornos y entrenamiento
         G, ed, an, nd, ar, cr = cargar_entorno_base(BBOX)
         df = preparar_datos_historicos(RUTA_HISTORICO, BBOX, cr, ed, G, nd, ar)
         mc, sc, mk, cf = entrenar_cerebro_ia(df)
-        
-        # 2. Guardado en Memoria (Caché)
         st.session_state.update({
-            'crs_obj': cr, 
-            'edificios_fusionados': ed, 
-            'anclas_proyectadas': an, 
-            'nodos_gdf': nd, 
-            'df_historico_procesado': df, 
-            'modelo_cat': mc, 
-            'escalador': sc, 
-            'modelo_kmeans': mk, 
-            'cols_fisicas': cf, 
-            'data_cargada': True
+            'crs_obj': cr, 'edificios_fusionados': ed, 'anclas_proyectadas': an, 'nodos_gdf': nd, 
+            'df_historico_procesado': df, 'modelo_cat': mc, 'escalador': sc, 'modelo_kmeans': mk, 
+            'cols_fisicas': cf, 'data_cargada': True
         })
 
-# 3. Variables de estado de navegación
 if 'c_lat' not in st.session_state: st.session_state.c_lat = 20.605192
 if 'c_lng' not in st.session_state: st.session_state.c_lng = -100.382373
 if 'analisis' not in st.session_state: st.session_state.analisis = False
-
 
 # ==============================================================================
 # CAPA 4: INTERFAZ DE USUARIO (MAPA Y REPORTE MULTIDIMENSIONAL)
 # ==============================================================================
 st.title("🎯 Oráculo Urbano: Inteligencia Territorial")
-st.markdown("### Motor de Viabilidad Inmobiliaria Enriquecido (SIG + Google Places)")
+st.markdown("### Motor de Viabilidad Inmobiliaria Enriquecido (SIG + Google Places + IA Generativa)")
 
 c_map, c_diag = st.columns([2, 1])
 
@@ -271,26 +278,22 @@ with c_map:
     lat_a, lon_a = st.session_state.c_lat, st.session_state.c_lng
     m = folium.Map(location=[lat_a, lon_a], zoom_start=18, tiles='CartoDB positron')
     
-    # Recortamos edificios para no trabar el navegador (Radio de ~400m)
     p_central = Point(lon_a, lat_a)
     edif_geo = st.session_state.edificios_fusionados.to_crs("EPSG:4326")
     edif_recorte = edif_geo.clip(p_central.buffer(0.004))
     
-    # Dibujamos las huellas de Overture / OSM en el mapa
     folium.GeoJson(
         edif_recorte,
         style_function=lambda x: {'fillColor': '#8A2BE2', 'color': '#4B0082', 'weight': 1, 'fillOpacity': 0.3},
         name="Huellas Constructivas"
     ).add_to(m)
     
-    # Marcador y Buffers (Zonas de influencia)
     folium.Marker([lat_a, lon_a], icon=folium.Icon(color='purple', icon='star')).add_to(m)
     folium.Circle([lat_a, lon_a], radius=50, color='blue', fill=True, opacity=0.2).add_to(m)
     folium.Circle([lat_a, lon_a], radius=300, color='gray', fill=False, dash_array='5, 5').add_to(m)
     
     map_dict = st_folium(m, width="100%", height=550, key=f"map_{lat_a}")
     
-    # Interacción de clic
     if map_dict.get("last_clicked"):
         n_lat, n_lng = map_dict["last_clicked"]["lat"], map_dict["last_clicked"]["lng"]
         if n_lat != st.session_state.c_lat:
@@ -317,22 +320,26 @@ with c_diag:
 # --- SECCIÓN INFERIOR: REPORTE DE RESULTADOS ---
 if st.session_state.analisis:
     st.markdown("---")
-    t1, t2, t3, t4 = st.tabs(["🏗️ Morfología", "👥 Demografía", "⏳ Flujo Temporal", "📋 Dictamen"])
+    t1, t2, t3, t4 = st.tabs(["🏗️ Morfología", "👥 Demografía", "⏳ Flujo Temporal", "📋 Dictamen Final"])
     info = st.session_state.ctx
     
     with t1:
+        st.write("### Análisis de Infraestructura")
         st.metric("Clasificación de Suelo", info['tipo_predio'])
         st.metric("Masa Crítica Construida", f"{info['masa_critica']:.0f} m²")
+        st.write(f"**Índice de Vitalidad:** {info.get('indice_vitalidad', 'N/A')}")
         if "Decadencia" in info['tipo_predio']: 
             st.error("⚠️ Alerta: Volumen de edificio alto pero nula tracción digital (Reseñas Bajas).")
             
     with t2:
+        st.write("### Perfil Socioeconómico")
         st.subheader(f"NSE Deducido: {info['segmento_nse']}")
         st.info("Escolaridad: " + ("Superior" if info['segmento_nse'] == "Premium" else "Media"))
-        if info.get('cerca_escuela'): 
-            st.warning("🏫 Centro Educativo a <100m. Impacto en flujos comerciales segmentados.")
+        if info.get('es_informal'): 
+            st.warning("⚠️ Zona con alta fricción de comercio informal detectada.")
             
-    with t3: # <-- ¡Indentación arreglada aquí!
+    with t3:
+        st.write("### Dinámica de Flujo y Valorización")
         st.metric("Ancla Urbana Dominante", info.get('ancla_dominante', "Ninguna"))
         c_f1, c_f2 = st.columns(2)
         with c_f1:
@@ -342,7 +349,19 @@ if st.session_state.analisis:
         st.write(f"**Patrón Dominante:** {info['patron_flujo']}")
         
     with t4:
+        st.write("### Ranking de Oportunidad (Modelo Cuantitativo)")
         st.dataframe(st.session_state.df_res, use_container_width=True, hide_index=True)
         st.bar_chart(st.session_state.df_res.set_index("Giro"))
+        
+        st.markdown("---")
+        st.write("### 🧠 Exploración Cualitativa (IA Generativa)")
+        st.caption("Interpreta el contexto SIG para descubrir giros fuera del modelo tradicional.")
+        
+        if st.button("✨ Consultar Oráculo Generativo", type="secondary"):
+            with st.spinner("Analizando radiografía con Gemini AI..."):
+                recomendaciones = consultar_oraculo_generativo(st.session_state.ctx)
+                st.markdown(recomendaciones)
+        
+        st.markdown("---")
         csv = st.session_state.df_res.to_csv(index=False).encode('utf-8-sig')
-        st.download_button("📥 Descargar Reporte Completo", data=csv, file_name=f"Dictamen_{st.session_state.c_lat:.4f}.csv", mime="text/csv")
+        st.download_button("📥 Descargar Reporte Cuantitativo", data=csv, file_name=f"Dictamen_{st.session_state.c_lat:.4f}.csv", mime="text/csv")
