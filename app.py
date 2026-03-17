@@ -210,6 +210,58 @@ with st.spinner("⏳ Cargando Gemelo Digital y Entrenando IA (Esto tomará unos 
         sistema_listo = False
 
 # ==============================================================================
+# CAPA 3: INICIALIZACIÓN (Hacer las variables accesibles)
+# ==============================================================================
+with st.spinner("⏳ Cargando Gemelo Digital..."):
+    if 'data_cargada' not in st.session_state:
+        # Ejecutamos la función y DESEMPAQUETAMOS los resultados en variables globales
+        (G_proyectado, 
+         edificios_fusionados, 
+         anclas_proyectadas, 
+         nodos_gdf, 
+         aristas_gdf, 
+         crs_obj) = cargar_entorno_base(BBOX)
+        
+        # Procesamos el histórico
+        df_historico_procesado = preparar_datos_historicos(
+            RUTA_HISTORICO, BBOX, crs_obj, edificios_fusionados, 
+            G_proyectado, nodos_gdf, aristas_gdf
+        )
+        
+        # Entrenamos la IA
+        modelo_cat, escalador, modelo_kmeans, cols_fisicas = entrenar_cerebro_ia(df_historico_procesado)
+        
+        # Guardamos todo en session_state para que no se pierda al refrescar
+        st.session_state.update({
+            'G_proyectado': G_proyectado,
+            'edificios_fusionados': edificios_fusionados,
+            'anclas_proyectadas': anclas_proyectadas,
+            'nodos_gdf': nodos_gdf,
+            'aristas_gdf': aristas_gdf,
+            'crs_obj': crs_obj,
+            'df_historico_procesado': df_historico_procesado,
+            'modelo_cat': modelo_cat,
+            'escalador': escalador,
+            'modelo_kmeans': modelo_kmeans,
+            'cols_fisicas': cols_fisicas,
+            'data_cargada': True
+        })
+        sistema_listo = True
+    else:
+        # Si ya estaban cargadas, las recuperamos para que el código las vea
+        G_proyectado = st.session_state.G_proyectado
+        edificios_fusionados = st.session_state.edificios_fusionados
+        anclas_proyectadas = st.session_state.anclas_proyectadas
+        nodos_gdf = st.session_state.nodos_gdf
+        aristas_gdf = st.session_state.aristas_gdf
+        crs_obj = st.session_state.crs_obj
+        df_historico_procesado = st.session_state.df_historico_procesado
+        modelo_cat = st.session_state.modelo_cat
+        escalador = st.session_state.escalador
+        modelo_kmeans = st.session_state.modelo_kmeans
+        cols_fisicas = st.session_state.cols_fisicas
+        sistema_listo = True
+# ==============================================================================
 # CAPA 4: FRONT-END "REPORTEADOR" (CORREGIDO)
 # ==============================================================================
 if sistema_listo:
