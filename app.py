@@ -134,85 +134,89 @@ with st.spinner("⏳ Cargando Gemelo Digital y Entrenando IA (Esto tomará unos 
         sistema_listo = False
 
 # ==============================================================================
-# CAPA 4: FRONT-END (Interfaz de Usuario)
+# CAPA 4: FRONT-END "ORÁCULO" (Clic en Mapa + Recomendación Automática)
 # ==============================================================================
 if sistema_listo:
-    st.title("🎯 Motor Predictivo de Viabilidad Comercial (PropTech)")
-    st.markdown("Evalúa el riesgo de quiebra de un local basándote en la morfología urbana de Querétaro.")
+    st.title("🎯 Oráculo Urbano: Inteligencia Territorial")
+    st.markdown("### Haz clic en el mapa para descubrir el mejor giro comercial para ese predio")
 
-    st.sidebar.header("📍 Parámetros del Local")
-    lat_input = st.sidebar.number_input("Latitud", value=20.605192, format="%.6f")
-    lon_input = st.sidebar.number_input("Longitud", value=-100.382373, format="%.6f")
+    # 1. GESTIÓN DE COORDENADAS (Memoria de Clic)
+    if 'coords' not in st.session_state:
+        st.session_state.coords = {"lat": 20.605192, "lng": -100.382373}
 
-    giros_dict = {
-        "446110": "Farmacia con Consultorio",
-        "461110": "Abarrotes / Minisuper",
-        "722511": "Restaurante a la Carta",
-        "541110": "Despacho Profesional"
-    }
-    giro_seleccionado = st.sidebar.selectbox("Giro Comercial a Evaluar", options=list(giros_dict.keys()), format_func=lambda x: giros_dict[x])
+    # Creamos dos columnas: Mapa a la izquierda, Resultados a la derecha
+    col_mapa, col_stats = st.columns([2, 1])
 
-    if st.sidebar.button("Generar Dictamen de Riesgo", type="primary"):
-        with st.spinner("🧠 Analizando micro-morfología y ejecutando predicción..."):
-            # 1. Cálculos de la coordenada
-            p_geom = gpd.GeoSeries([Point(lon_input, lat_input)], crs="EPSG:4326").to_crs(crs_obj).geometry[0]
-            
-            nearest_edge, dist_calle = ox.distance.nearest_edges(G_proyectado, X=p_geom.x, Y=p_geom.y, return_dist=True)
-            frontage_val = 1 if dist_calle <= 12 else 0
-            estado_fachada = "Frente Directo" if frontage_val == 1 else "Retranqueado / Oculto"
-            
-            u, v, _ = nearest_edge
-            jerarquia_val = G_proyectado.get_edge_data(u, v)[0].get('highway', 'unclassified')
-            if isinstance(jerarquia_val, list): jerarquia_val = jerarquia_val[0]
-            
-            # Variables espaciales instantáneas
-            masa_critica = edificios_fusionados.clip(p_geom.buffer(50)).area.sum()
-            idx_nodo = nodos_gdf.distance(p_geom).idxmin()
-            centralidad_val = nodos_gdf.loc[idx_nodo, 'betweenness'] if 'betweenness' in nodos_gdf.columns else 0.001
-            
-            # Simulamos distancias para no saturar la RAM de la nube
-            dist_comp = 150.0 
-            dist_ancla = 250.0
-            dist_esq = dist_calle + 10.0
+    with col_mapa:
+        # Dibujamos el mapa base
+        m = folium.Map(location=[st.session_state.coords["lat"], st.session_state.coords["lng"]], 
+                       zoom_start=18, tiles='CartoDB positron')
+        
+        # Marcador en la posición actual
+        folium.Marker([st.session_state.coords["lat"], st.session_state.coords["lng"]], 
+                      icon=folium.Icon(color='blue', icon='info-sign')).add_to(m)
+        
+        # El mapa se vuelve un sensor de clics
+        mapa_interactivo = st_folium(m, width="100%", height=500, key="selector_urbano")
 
-            # 2. IA Inferencia
-            df_cluster = pd.DataFrame([[dist_comp, masa_critica, dist_ancla, dist_esq]], columns=cols_fisicas)
-            tribu_val = f"Perfil_{modelo_kmeans.predict(escalador.transform(df_cluster))[0]}"
-            
-            X_sim = pd.DataFrame({
-                'codigo_act': [str(giro_seleccionado)], 'dist_competidor_m': [dist_comp],
-                'm2_construccion_50m': [masa_critica], 'dist_ancla_urbana_m': [dist_ancla],
-                'dist_esquina_m': [dist_esq], 'tipologia_urbana': [tribu_val],
-                'centralidad_flujo': [centralidad_val], 'jerarquia_vial': [jerarquia_val],
-                'frontage_visible': [frontage_val]
-            })
-            
-            probs = modelo_cat.predict_proba(X_sim)[0]
-            riesgo_quiebra = probs[0] * 100
-            
-            if riesgo_quiebra > 65: color_r, rec = '#d9534f', "ALTO RIESGO. Cambiar a giro de destino."
-            elif riesgo_quiebra > 40: color_r, rec = '#f0ad4e', "RIESGO MEDIO. Alta inversión en marketing."
-            else: color_r, rec = '#28a745', "VIABLE. Óptimo para retail."
+        # Si el usuario hace clic, actualizamos la memoria y recargamos
+        if mapa_interactivo.get("last_clicked"):
+            nueva_lat = mapa_interactivo["last_clicked"]["lat"]
+            nueva_lng = mapa_interactivo["last_clicked"]["lng"]
+            if nueva_lat != st.session_state.coords["lat"]:
+                st.session_state.coords = {"lat": nueva_lat, "lng": nueva_lng}
+                st.rerun()
 
-            # 3. Mapa Folium
-            mapa_mvp = folium.Map(location=[lat_input, lon_input], zoom_start=18, tiles='CartoDB positron')
-            folium.Circle(radius=30, location=[lat_input, lon_input], color=color_r, fill=True, fill_color=color_r, fill_opacity=0.3).add_to(mapa_mvp)
-            
-            html_popup = f"""
-            <div style="font-family: Arial; width: 250px;">
-                <h4 style="color: {color_r}; text-align: center;">📍 IA Espacial</h4>
-                <hr>
-                <b>Giro:</b> {giros_dict[giro_seleccionado]}<br>
-                <b>Visibilidad:</b> {estado_fachada}<br>
-                <b>Masa a 50m:</b> {masa_critica:.0f} m²<br>
-                <hr>
-                <div style="text-align: center;">
-                    <b>Riesgo de Quiebra:</b><br>
-                    <span style="font-size: 20px; color: {color_r};">{riesgo_quiebra:.1f}%</span>
-                </div>
-            </div>
-            """
-            folium.Marker([lat_input, lon_input], icon=folium.Icon(color='black', icon='info-sign'), popup=folium.Popup(html_popup, max_width=300)).add_to(mapa_mvp)
-            
-            st_folium(mapa_mvp, width=800, height=500)
-            st.success(rec)
+    with col_stats:
+        st.subheader("📊 Análisis de Micro-Entorno")
+        lat, lon = st.session_state.coords["lat"], st.session_state.coords["lng"]
+        st.write(f"**Ubicación:** `{lat:.6f}, {lon:.6f}`")
+        
+        # Botón para activar la IA
+        if st.button("🚀 Lanzar Recomendador de IA", type="primary", use_container_width=True):
+            with st.spinner("Escaneando el Gemelo Digital..."):
+                
+                # --- MOTOR DE RECOMENDACIÓN MULTI-GIRO ---
+                # Definimos los giros a evaluar (Puedes expandir esta lista)
+                giros_evaluar = {
+                    "446110": "Farmacia con Consultorio",
+                    "461110": "Abarrotes / Minisuper",
+                    "722511": "Restaurante a la Carta",
+                    "722518": "Cocina Económica (Dark Kitchen)",
+                    "812110": "Salón de Belleza / Barbería",
+                    "541110": "Servicios Profesionales",
+                    "339900": "Manufactura Ligera / Taller",
+                    "811110": "Taller Mecánico",
+                    "611110": "Academia / Escuela"
+                }
+
+                resultados = []
+                
+                # Reutilizamos la lógica de inferencia para cada giro
+                for cod, nom in giros_evaluar.items():
+                    # Calculamos el riesgo para este punto y este giro
+                    # (Nota: Asegúrate de que 'evaluar_local_comercial' esté disponible en tu Capa 2)
+                    # Usamos el frontage real calculado por la distancia a la calle
+                    probs, clase, vars_c = evaluar_local_comercial(lat, lon, cod, frontage_escenario=1) # 1 por defecto o calculado
+                    
+                    resultados.append({
+                        "Giro Comercial": nom,
+                        "Prob. Éxito": round(probs[1] * 100, 1)
+                    })
+
+                # Convertimos a DataFrame para mostrar el Ranking
+                df_res = pd.DataFrame(resultados).sort_values(by="Prob. Éxito", ascending=False)
+
+                st.markdown("---")
+                st.markdown("### 🏆 Ranking de Viabilidad")
+                
+                # Mostramos la tabla con un degradado de color (Estilo Tesis)
+                st.dataframe(
+                    df_res.style.background_gradient(cmap='RdYlGn', subset=['Prob. Éxito']),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # Recomendación final
+                ganador = df_res.iloc[0]['Giro Comercial']
+                st.success(f"**Recomendación Maestra:** El predio es óptimo para un(a) **{ganador}**.")
