@@ -244,18 +244,46 @@ if sistema_listo:
                 st.session_state.contexto_predio = contexto
                 st.session_state.analisis_listo = True
 
-        if st.session_state.analisis_listo:
+        # --- BOTÓN DE PROCESAMIENTO ---
+        if st.button("🚀 Ejecutar Estudio Completo", type="primary", use_container_width=True):
+            with st.spinner("Analizando micro-morfología y flujos..."):
+                giros = {"722511": "Restaurante Gourmet", "611110": "Academia", "446110": "Farmacia", "812110": "Spa/Belleza", "461110": "Mini-Super", "722518": "Cocina Económica"}
+                res = []
+                for cod, nom in giros.items():
+                    probs, contexto, vars_sim = evaluar_local_comercial(curr_lat, curr_lon, cod)
+                    res.append({"Giro": nom, "Viabilidad (%)": round(probs[1] * 100, 1)})
+                
+                # GUARDAMOS TODO EN EL ESTADO DE LA SESIÓN
+                st.session_state.df_resultados = pd.DataFrame(res).sort_values(by="Viabilidad (%)", ascending=False)
+                st.session_state.contexto_predio = contexto
+                st.session_state.analisis_listo = True
+                st.rerun() # Forzamos recarga para que aparezcan los resultados
+
+        # --- SEGURO CONTRA ATTRIBUTEERROR ---
+        # Solo dibujamos si 'analisis_listo' es True Y existe la llave en session_state
+        if st.session_state.analisis_listo and 'contexto_predio' in st.session_state:
             st.markdown("---")
             t1, t2, t3 = st.tabs(["🏗️ Morfología", "👥 Segmentación", "📋 Dictamen"])
+            
+            # Ahora es seguro leer la variable ctx
             ctx = st.session_state.contexto_predio
+            
             with t1:
                 st.metric("Tipo de Predio", ctx['tipo_predio'])
                 st.metric("Masa Crítica", f"{ctx['masa_critica']:.0f} m²")
                 st.write(f"**Trama Urbana:** {ctx['conectividad']}")
+            
             with t2:
                 st.subheader(f"NSE Deducido: {ctx['segmento_nse']}")
-                if ctx['es_informal']: st.warning("⚠️ Zona de Mercado Informal Detectada")
+                if ctx['es_informal']: 
+                    st.warning("⚠️ Zona de Mercado Informal Detectada")
+                else:
+                    st.success("✅ Entorno Urbano Consolidado")
+            
             with t3:
                 st.dataframe(st.session_state.df_resultados, use_container_width=True, hide_index=True)
                 csv = st.session_state.df_resultados.to_csv(index=False).encode('utf-8-sig')
                 st.download_button("📥 Descargar Reporte CSV", data=csv, file_name=f"estudio_{curr_lat:.4f}.csv", mime="text/csv")
+        else:
+            # Mensaje amigable mientras no hay datos
+            st.info("Configura el punto en el mapa y presiona el botón rojo para generar el reporte.")
