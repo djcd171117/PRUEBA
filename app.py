@@ -17,6 +17,7 @@ from catboost import CatBoostClassifier
 from sklearn.model_selection import train_test_split
 import overturemaps
 from shapely import wkb
+import base64
 
 st.set_page_config(page_title="Motor Predictivo PropTech", layout="wide")
 
@@ -186,6 +187,15 @@ def evaluar_local_comercial(lat, lon, giro_scian, frontage_escenario=1):
 
     return [1-prob_exito, prob_exito], es_informal, X_sim.iloc[0]
 
+    ##Función reporte
+
+    def generar_reporte_csv(df_resultados, lat, lon):
+    """Crea un enlace de descarga para los resultados del análisis."""
+    csv = df_resultados.to_csv(index=False).encode('utf-8-sig')
+    b64 = base64.b64encode(csv).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="reporte_geomarketing_{lat}_{lon}.csv">📥 Descargar Reporte de Etapa (CSV)</a>'
+    return href
+
 # ==============================================================================
 # CAPA 3: INICIALIZACIÓN (Ejecución al arrancar la App)
 # ==============================================================================
@@ -300,3 +310,30 @@ if sistema_listo:
                 # Recomendación final dinámica
                 ganador = df_res.iloc[0]['Giro Comercial']
                 st.success(f"**Veredicto IA:** Para este punto, el modelo recomienda establecer un **{ganador}**.")
+
+    # --- DENTRO DEL BLOQUE 4, DESPUÉS DE LA PREDICCIÓN ---
+if st.session_state.ranking_listo:
+    st.markdown("---")
+    # Creamos pestañas para organizar el reporte por etapas
+    tab1, tab2, tab3 = st.tabs(["🏗️ Etapa 1: Morfología", "👥 Etapa 2: Demografía", "🏁 Etapa 3: Dictamen"])
+
+    with tab1:
+        st.subheader("Análisis de Entorno Físico")
+        st.write(f"**Masa Crítica:** {vars_c['m2_construccion_50m']:.2f} m² construidos.")
+        st.write(f"**Jerarquía Vial:** {vars_c['jerarquia_vial']}")
+        # Aquí podrías poner un gráfico de barras de distancias a anclas
+
+    with tab2:
+        st.subheader("Segmentación y Demografía")
+        st.metric("Nivel Socioeconómico", segmento_detectado)
+        if es_zona_informal:
+            st.error("Alerta: Entorno de alta fricción por comercio itinerante.")
+        else:
+            st.success("Entorno de infraestructura consolidada.")
+
+    with tab3:
+        st.subheader("Dictamen de Viabilidad Comercial")
+        st.dataframe(st.session_state.df_resultados, use_container_width=True)
+        
+        # BOTÓN DE IMPRESIÓN / DESCARGA
+        st.markdown(generar_reporte_csv(st.session_state.df_resultados, curr_lat, curr_lon), unsafe_allow_html=True)
