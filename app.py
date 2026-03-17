@@ -210,130 +210,85 @@ with st.spinner("⏳ Cargando Gemelo Digital y Entrenando IA (Esto tomará unos 
         sistema_listo = False
 
 # ==============================================================================
-# CAPA 4: FRONT-END "ORÁCULO" (Realismo Contextual + NSE + Clic)
+# CAPA 4: FRONT-END "REPORTES POR ETAPAS" (Estilo QGIS/Geomarketing)
 # ==============================================================================
 if sistema_listo:
-    st.title("🎯 Oráculo Urbano: Inteligencia Territorial")
-    st.markdown("### Haz clic en el mapa para descubrir el mejor giro comercial")
-
-    # --- 1. MEMORIA DE ESTADO (Session State) ---
+    st.title("🎯 Sistema de Inteligencia Territorial")
+    
+    # 1. GESTIÓN DE ESTADO (PERSISTENCIA)
     if 'coords' not in st.session_state:
         st.session_state.coords = {"lat": 20.605192, "lng": -100.382373}
-    
-    # --- 2. LAYOUT DE COLUMNAS ---
+    if 'analisis_listo' not in st.session_state:
+        st.session_state.analisis_listo = False
+
     col_mapa, col_stats = st.columns([2, 1])
 
     with col_mapa:
-        lat_actual = st.session_state.coords["lat"]
-        lon_actual = st.session_state.coords["lng"]
-        
-        # Mapa con marcador púrpura de "Análisis"
+        # Mapa Interactivo de Selección
+        lat_actual, lon_actual = st.session_state.coords["lat"], st.session_state.coords["lng"]
         m = folium.Map(location=[lat_actual, lon_actual], zoom_start=18, tiles='CartoDB positron')
-        folium.Marker([lat_actual, lon_actual], 
-                      popup="Punto de Análisis",
-                      icon=folium.Icon(color='purple', icon='star')).add_to(m)
-        
-        # Captura de clics
+        folium.Marker([lat_actual, lon_actual], icon=folium.Icon(color='purple', icon='star')).add_to(m)
         mapa_interactivo = st_folium(m, width="100%", height=550, key="selector_urbano")
 
         if mapa_interactivo.get("last_clicked"):
-            click_lat = mapa_interactivo["last_clicked"]["lat"]
-            click_lng = mapa_interactivo["last_clicked"]["lng"]
+            click_lat, click_lng = mapa_interactivo["last_clicked"]["lat"], mapa_interactivo["last_clicked"]["lng"]
             if click_lat != st.session_state.coords["lat"]:
                 st.session_state.coords = {"lat": click_lat, "lng": click_lng}
+                st.session_state.analisis_listo = False # Resetear reporte al cambiar ubicación
                 st.rerun() 
 
     with col_stats:
-        st.subheader("🧐 Diagnóstico de Entorno")
-        curr_lat = st.session_state.coords["lat"]
-        curr_lon = st.session_state.coords["lng"]
+        st.subheader("🧐 Centro de Diagnóstico")
+        curr_lat, curr_lon = st.session_state.coords["lat"], st.session_state.coords["lng"]
         
-        st.write(f"**Ubicación seleccionada:**")
-        st.code(f"{curr_lat:.6f}, {curr_lon:.6f}")
-        
-        # --- BOTÓN DE PROCESAMIENTO ---
-        if st.button("🚀 Lanzar Recomendador de IA", type="primary", use_container_width=True):
-            with st.spinner("Escaneando el Gemelo Digital y detectando patrones..."):
-                
-                # Definición de Giros (Mezcla de Premium y Populares)
-                giros_evaluar = {
-                    "722511": "Restaurante Gourmet / Especialidad",
-                    "611110": "Academia / Centro de Capacitación",
-                    "446110": "Farmacia (Genéricos / Especializada)",
-                    "812110": "Barbería / Studio de Belleza",
-                    "541110": "Despacho / Servicios Profesionales",
-                    "461110": "Abarrotes / Comercio Local",
-                    "722518": "Cocina Económica / Antojitos",
-                    "621111": "Consultorios Médicos",
-                    "713940": "Gimnasio / Yoga Studio"
+        # Botón Maestro para generar todas las etapas
+        if st.button("🚀 Ejecutar Estudio Completo", type="primary", use_container_width=True):
+            with st.spinner("Procesando capas de información..."):
+                # Lista de giros a evaluar
+                giros_reporte = {
+                    "722511": "Restaurante Gourmet", "611110": "Centro Educativo",
+                    "446110": "Farmacia", "812110": "Salón de Belleza",
+                    "461110": "Abarrotes/Mini-Super", "722518": "Cocina Económica"
                 }
-
+                
+                # Ejecutamos inferencia y guardamos en session_state
                 resultados = []
-                es_zona_informal = False
-                segmento_detectado = ""
-
-                # Ejecutamos inferencia multi-giro
-                for cod, nom in giros_evaluar.items():
-                    # Llamamos a la Capa 2 actualizada
+                for cod, nom in giros_reporte.items():
                     probs, informal, vars_c = evaluar_local_comercial(curr_lat, curr_lon, cod)
-                    
-                    # Guardamos datos de contexto (solo una vez en el bucle)
-                    es_zona_informal = informal
-                    segmento_detectado = vars_c['segmento_nse']
-                    
-                    resultados.append({
-                        "Giro Comercial": nom,
-                        "Viabilidad (%)": round(probs[1] * 100, 1)
-                    })
-
-                # --- 3. MOSTRAR ALERTAS DE REALIDAD ---
-                st.markdown("---")
+                    resultados.append({"Giro": nom, "Viabilidad (%)": round(probs[1] * 100, 1)})
                 
-                # Alerta de Informalidad (El Filtro de Tianguis)
-                if es_zona_informal:
-                    st.warning("⚠️ **Zona de Mercado Detectada:** Se observa alta densidad peatonal con baja infraestructura permanente. El modelo ha priorizado giros de alta rotación popular.")
+                # Guardamos variables de la última corrida para los reportes
+                st.session_state.df_resultados = pd.DataFrame(resultados).sort_values(by="Viabilidad (%)", ascending=False)
+                st.session_state.contexto = {"informal": informal, "nse": vars_c['segmento_nse'], "masa": vars_c['m2_construccion_50m']}
+                st.session_state.analisis_listo = True
+
+        # --- MOSTRAR REPORTE POR ETAPAS (Tabs como en tu imagen) ---
+        if st.session_state.analisis_listo:
+            st.markdown("---")
+            tab1, tab2, tab3 = st.tabs(["🏗️ Morfología", "👥 Social/NSE", "📋 Dictamen"])
+
+            with tab1:
+                st.write("**Etapa 1: Infraestructura**")
+                st.metric("Masa Crítica (50m)", f"{st.session_state.contexto['masa']:.0f} m²")
+                st.info(f"Análisis morfológico basado en {len(edificios_fusionados)} registros de edificios.")
+
+            with tab2:
+                st.write("**Etapa 2: Segmentación**")
+                nse = st.session_state.contexto['nse']
+                st.subheader(f"Perfil: {nse}")
+                if st.session_state.contexto['informal']:
+                    st.warning("Detectada fricción por comercio informal itinerante.")
+
+            with tab3:
+                st.write("**Etapa 3: Resultados**")
+                st.dataframe(st.session_state.df_resultados, use_container_width=True, hide_index=True)
                 
-                # Indicador NSE Deductivo
-                color_nse = {"Premium": "blue", "Medio": "green", "Popular": "orange"}
-                st.markdown(f"**Perfil Socioeconómico:** :{color_nse.get(segmento_detectado, 'grey')}[{segmento_detectado}]")
-
-                # --- 4. RANKING DE RESULTADOS ---
-                df_res = pd.DataFrame(resultados).sort_values(by="Viabilidad (%)", ascending=False)
-                
-                st.markdown("### 🏆 Ranking de Oportunidad")
-                st.dataframe(
-                    df_res.style.background_gradient(cmap='RdYlGn', subset=['Viabilidad (%)']),
-                    use_container_width=True,
-                    hide_index=True
-                )
-
-                # Recomendación final dinámica
-                ganador = df_res.iloc[0]['Giro Comercial']
-                st.success(f"**Veredicto IA:** Para este punto, el modelo recomienda establecer un **{ganador}**.")
-
-    # --- DENTRO DEL BLOQUE 4, DESPUÉS DE LA PREDICCIÓN ---
-if st.session_state.ranking_listo:
-    st.markdown("---")
-    # Creamos pestañas para organizar el reporte por etapas
-    tab1, tab2, tab3 = st.tabs(["🏗️ Etapa 1: Morfología", "👥 Etapa 2: Demografía", "🏁 Etapa 3: Dictamen"])
-
-    with tab1:
-        st.subheader("Análisis de Entorno Físico")
-        st.write(f"**Masa Crítica:** {vars_c['m2_construccion_50m']:.2f} m² construidos.")
-        st.write(f"**Jerarquía Vial:** {vars_c['jerarquia_vial']}")
-        # Aquí podrías poner un gráfico de barras de distancias a anclas
-
-    with tab2:
-        st.subheader("Segmentación y Demografía")
-        st.metric("Nivel Socioeconómico", segmento_detectado)
-        if es_zona_informal:
-            st.error("Alerta: Entorno de alta fricción por comercio itinerante.")
-        else:
-            st.success("Entorno de infraestructura consolidada.")
-
-    with tab3:
-        st.subheader("Dictamen de Viabilidad Comercial")
-        st.dataframe(st.session_state.df_resultados, use_container_width=True)
-        
-        # BOTÓN DE IMPRESIÓN / DESCARGA
-        st.markdown(generar_reporte_csv(st.session_state.df_resultados, curr_lat, curr_lon), unsafe_allow_html=True)
+                # BOTÓN DE DESCARGA (El "Reporte impreso")
+                csv = st.session_state.df_resultados.to_csv(index=False).encode('utf-8-sig')
+                st.download_button(
+                    label="📥 Descargar Reporte Ejecutivo",
+                    data=csv,
+                    file_name=f"estudio_geomarketing_{curr_lat:.4f}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )True)
