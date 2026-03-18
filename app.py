@@ -21,7 +21,7 @@ st.set_page_config(page_title="Visor Urbano PropTech", layout="wide")
 try:
     G_CLIENT = googlemaps.Client(key=st.secrets["G_MAPS_KEY"])
     gemini_client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
-exceptException as e:
+except Exception as e:
     st.error("Error en las llaves de API.")
     st.stop()
 
