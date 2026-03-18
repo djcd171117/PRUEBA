@@ -162,10 +162,10 @@ with c_diag:
 # RENDERIZADO DE RESULTADOS
 # ==============================================================================
 
-if st.session_state.res_ia:
+if st.session_state.get('res_ia'):
     st.markdown("---")
     
-    if st.session_state.tipo_res == "Barrido":
+    if st.session_state.get('tipo_res') == "Barrido":
         st.subheader("Resultados del Barrido")
         # Convierte la respuesta de la IA en DataFrame
         df = procesar_json_robusto(st.session_state.res_ia)
