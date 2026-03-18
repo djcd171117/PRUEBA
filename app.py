@@ -62,10 +62,14 @@ def obtener_contexto_local(lat, lon):
 # MOTOR IA Y PARSEO SEGURO (TU BLOQUE RESCATADO)
 # ==============================================================================
 
+# ==============================================================================
+# MOTOR IA Y PARSEO SEGURO (CORREGIDO CON TU MANUAL)
+# ==============================================================================
+
 def consultar_ai(radiografia, tipo_analisis, giro=None):
     try:
-        # Usamos exactamente el modelo que comprobaste que funciona
-        model_name = 'gemini-1.5-flash' 
+        # AQUÍ ESTÁ LA CORRECCIÓN: El modelo exacto de la nueva librería
+        model_name = 'gemini-3-flash-preview' 
         
         if tipo_analisis == "Validacion":
             prompt = f"Analiza la viabilidad del giro '{giro}' en este predio con este contexto: {radiografia}. Responde en 4 líneas breves: Viabilidad general, Riesgo principal y Oportunidad."
@@ -76,14 +80,12 @@ def consultar_ai(radiografia, tipo_analisis, giro=None):
             return response.text
             
         else:
-            # Opción de Barrido (Retorna el DataFrame directamente usando tu lógica)
             prompt = f"Analiza este predio y sugiere 8 giros comerciales viables. Responde SOLO en JSON con formato [{{'giro': 'Nombre', 'viabilidad': 90, 'categoria': 'Servicios', 'justificacion': 'Razón'}}]: {radiografia}"
             response = gemini_client.models.generate_content(
                 model=model_name,
                 contents=prompt
             )
             
-            # TU BLOQUE EXACTO DE EXTRACCIÓN
             res_text = response.text
             start = res_text.find('[')
             end = res_text.rfind(']') + 1
