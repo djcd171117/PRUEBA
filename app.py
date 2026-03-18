@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import geopandas as gpd
-import osmnx as ox
+import osmnx as ox  # RESTAURADO: Necesario para los polígonos de construcciones
+from shapely.geometry import Point
 import folium
 from streamlit_folium import st_folium
 import googlemaps
@@ -9,8 +10,8 @@ from google import genai
 import json
 import requests
 
-# 1. CONFIGURACIÓN DE PÁGINA
-st.set_page_config(page_title="Visor Urbano", layout="wide")
+# 1. CONFIGURACIÓN DE PÁGINA (SOBRIA Y PROFESIONAL)
+st.set_page_config(page_title="Visor Urbano MAX", layout="wide")
 
 # 2. INICIALIZACIÓN DE CLIENTES Y CREDENCIALES
 try:
@@ -26,28 +27,34 @@ except Exception as e:
 # ==============================================================================
 
 @st.cache_data
-def obtener_poligonos_edificios(lat, lon):
+def obtener_poligonos_edificios(lat, lon, dist=200):
+    # Descarga huellas constructivas (polígonos) reales de OpenStreetMap
     try:
-        return ox.features_from_point((lat, lon), {'building': True}, dist=200)
-    except:
+        buildings = ox.features_from_point((lat, lon), tags={'building': True}, dist=dist)
+        return buildings
+    except Exception as e:
+        # Devuelve GeoDataFrame vacío si no hay polígonos en la zona o hay error
         return gpd.GeoDataFrame()
 
 def consultar_api_denue_inegi(lat, lon):
     if not INEGI_TOKEN:
         return "Token de INEGI faltante"
     
+    # Endpoint DENUE para búsqueda por área geográfica
     url = f"https://www.inegi.org.mx/app/api/denue/v1/consulta/Buscar/todos/{lat},{lon}/250/{INEGI_TOKEN}"
     headers = {'User-Agent': 'Mozilla/5.0'}
     
     try:
+        # Petición a INEGI con User-Agent para evitar bloqueos
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code == 200:
-            return f"{len(res.json())} negocios formales (Radio 250m)"
+            return f"{len(res.json())} negocios formales (INEGI/DENUE en 250m)"
         return "Error en API INEGI"
     except:
         return "Falla de conexión a INEGI"
 
 def obtener_contexto_local(lat, lon):
+    # Agrupa datos SIG y DENUE antes del análisis AI
     ctx = {}
     try:
         places = G_CLIENT.places_nearby(location=(lat, lon), radius=200)
@@ -59,16 +66,12 @@ def obtener_contexto_local(lat, lon):
     return ctx
 
 # ==============================================================================
-# MOTOR IA Y PARSEO SEGURO (TU BLOQUE RESCATADO)
-# ==============================================================================
-
-# ==============================================================================
-# MOTOR IA Y PARSEO SEGURO (CORREGIDO CON TU MANUAL)
+# MOTOR IA Y PARSEO SEGURO (TU BLOQUE RESCATADO Y CORREGIDO)
 # ==============================================================================
 
 def consultar_ai(radiografia, tipo_analisis, giro=None):
     try:
-        # AQUÍ ESTÁ LA CORRECCIÓN: El modelo exacto de la nueva librería
+        # Modelo exacto compatible con la librería genai (corregido de rollback)
         model_name = 'gemini-3-flash-preview' 
         
         if tipo_analisis == "Validacion":
@@ -80,12 +83,13 @@ def consultar_ai(radiografia, tipo_analisis, giro=None):
             return response.text
             
         else:
-            prompt = f"Analiza este predio y sugiere 8 giros comerciales viables. Responde SOLO en JSON con formato [{{'giro': 'Nombre', 'viabilidad': 90, 'categoria': 'Servicios', 'justificacion': 'Razón'}}]: {radiografia}"
+            prompt = f"Analiza este predio y sugiere 8 giros comerciales viables para México. Responde SOLO en JSON con formato [{{'giro': 'Nombre', 'viabilidad': 90, 'categoria': 'Servicios', 'justificacion': 'Razón'}}]: {radiografia}"
             response = gemini_client.models.generate_content(
                 model=model_name,
                 contents=prompt
             )
             
+            # TU BLOQUE EXACTO DE EXTRACCIÓN JSON
             res_text = response.text
             start = res_text.find('[')
             end = res_text.rfind(']') + 1
@@ -108,23 +112,38 @@ def consultar_ai(radiografia, tipo_analisis, giro=None):
 if 'c_lat' not in st.session_state:
     st.session_state.update({'c_lat': 20.605, 'c_lng': -100.382, 'res_ia': None, 'tipo_res': None})
 
-st.title("Visor Urbano MAX")
+st.title("Visor Urbano")
+st.markdown("### Plataforma Híbrida de Inteligencia Territorial (Querétaro)")
 
 c_map, c_diag = st.columns([2, 1])
 
 with c_map:
     lat, lon = st.session_state.c_lat, st.session_state.c_lng
+    # Mapa Base Sobrio (CartoDB Positron)
     m = folium.Map(location=[lat, lon], zoom_start=17, tiles='CartoDB positron')
     
-    edificios = obtener_poligonos_edificios(lat, lon)
-    if not edificios.empty:
-        folium.GeoJson(edificios, style_function=lambda x: {'fillColor': '#8A2BE2', 'color': '#4B0082', 'weight': 1, 'fillOpacity': 0.3}).add_to(m)
+    # --- RESTAURADO: Polígonos de Construcciones (ADN SIG) ---
+    with st.spinner("Cargando huellas constructivas (OSM)..."):
+        buildings_gdf = obtener_poligonos_edificios(lat, lon, dist=200)
+        if not buildings_gdf.empty:
+            folium.GeoJson(
+                buildings_gdf, 
+                style_function=lambda x: {'fillColor': '#8A2BE2', 'color': '#4B0082', 'weight': 1, 'fillOpacity': 0.3},
+                tooltip=folium.GeoJsonTooltip(fields=['building'], aliases=['Tipo'])
+            ).add_to(m)
 
-    folium.Circle([lat, lon], radius=50, color='blue', fill=True, opacity=0.1).add_to(m)
-    folium.Circle([lat, lon], radius=200, color='orange', weight=2, fill=False).add_to(m)
-    folium.Circle([lat, lon], radius=1000, color='red', weight=1, fill=False).add_to(m)
+    # --- Radios Metodológicos tipo RADAR (50m, 200m, 1000m) ---
+    # Radio Inmediato (🔵 50m / 1 min walk)
+    folium.Circle([lat, lon], radius=50, color='blue', fill=True, opacity=0.1, tooltip="Inmediato (50m)").add_to(m)
+    # Radio Meso / Comercial Peatonal (🟠 200m / 3 min walk)
+    folium.Circle([lat, lon], radius=200, color='orange', weight=2, fill=False, dash_array='5,5', tooltip="Comercial Peatonal (200m)").add_to(m)
+    # Radio Macro / Zona de Destino (🔴 1000m / 12 min walk - '15 minute city')
+    folium.Circle([lat, lon], radius=1000, color='red', weight=1, fill=False, tooltip="Zona de Destino (1000m)").add_to(m)
+    
+    # Marcador central de análisis
     folium.Marker([lat, lon]).add_to(m)
 
+    # Widget del mapa
     map_res = st_folium(m, width="100%", height=550, key="visor_mvp")
     
     if map_res.get("last_clicked"):
@@ -135,25 +154,24 @@ with c_map:
 with c_diag:
     st.subheader("Herramientas de Diagnóstico")
     
-    opcion = st.radio("Selecciona la ruta de análisis:", ["Analizar zona", "Validar propuesta"])
+    opcion = st.radio("Selecciona la ruta de análisis:", ["Barrido General de Mercado", "Validar Giro Específico"])
     
+    # Extrae el contexto local antes del diagnóstico
     ctx = obtener_contexto_local(st.session_state.c_lat, st.session_state.c_lng)
-    st.info(f"📊 INEGI (DENUE): {ctx['saturacion_inegi']}")
+    # SE ELIMINÓ EL CUADRO DE DENUE DE AQUÍ PARA BAJARLO A RESULTADOS
 
     if opcion == "Barrido General de Mercado":
         if st.button("EJECUTAR BARRIDO", type="primary", use_container_width=True):
             with st.spinner("Analizando mercado y armando tabla..."):
-                # Ahora consultar_ai devuelve un DataFrame directamente en este modo
                 st.session_state.res_ia = consultar_ai(ctx, "Barrido")
                 st.session_state.tipo_res = "Barrido"
                 st.rerun()
                 
     else:
-        giro_in = st.text_input("Ingresa el giro:")
+        giro_in = st.text_input("Ingresa el giro comercial:")
         if st.button("VALIDAR GIRO", type="primary", use_container_width=True):
             if giro_in:
                 with st.spinner("Validando factibilidad de tu giro..."):
-                    # Aquí consultar_ai devuelve texto
                     st.session_state.res_ia = consultar_ai(ctx, "Validacion", giro_in)
                     st.session_state.tipo_res = "Validacion"
                     st.rerun()
@@ -161,27 +179,33 @@ with c_diag:
                 st.warning("Escribe un giro comercial.")
 
 # ==============================================================================
-# RENDERIZADO DE RESULTADOS
+# RENDERIZADO DE RESULTADOS (CAPA DE VISIBILIDAD)
 # ==============================================================================
 
-# Usamos .get() para evitar el AttributeError que vimos antes
 if st.session_state.get('res_ia') is not None:
     st.markdown("---")
     
+    # --- MOVIDO: Cuadro de DENUE bajado junto a la información de análisis ---
+    ctx = st.session_state.ctx # Asegurar que tenemos el contexto guardado en estado o recuperado
+    st.info(f"📊 Contexto de Datos Duros: {ctx['saturacion_inegi']}")
+    
     if st.session_state.get('tipo_res') == "Barrido":
-        st.subheader("Resultados del Barrido")
+        st.subheader("Dictamen Ejecutivo: Giros Comerciales Recomendados")
         
-        # Como recuperamos tu función, res_ia YA es un DataFrame de Pandas
         df = st.session_state.res_ia 
         
         if not df.empty and "giro" in df.columns:
+            # Gráfica promedio por categoría (Capa de visibilidad)
             if "categoria" in df.columns:
+                #st.write("### Viabilidad promedio por Categoría")
                 st.bar_chart(df.groupby("categoria")["viabilidad"].mean())
+            
+            # Tabla de detalle
+            #st.write("### Detalle de Giros")
             st.dataframe(df.sort_values(by="viabilidad", ascending=False), use_container_width=True, hide_index=True)
         else:
-            st.error("Error al renderizar los resultados.")
-            st.dataframe(df)
+            st.error("Error al renderizar los resultados tabular.")
             
     else:
-        st.subheader("Dictamen de Viabilidad")
+        st.subheader("Dictamen Ejecutivo: Viabilidad de Giro Propio")
         st.success(st.session_state.res_ia)
