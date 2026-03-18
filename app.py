@@ -12,7 +12,7 @@ import re
 import requests
 
 # ==============================================================================
-# 1. CONFIGURACIÓN DE PÁGINA (CONGELADA)
+# 1. CONFIGURACIÓN DE PÁGINA 
 # ==============================================================================
 st.set_page_config(page_title="Visor Urbano", layout="wide")
 
@@ -25,7 +25,7 @@ except Exception as e:
     st.stop()
 
 # ==============================================================================
-# MOTOR SIG, EXTRACCIÓN DENUE Y DEMOGRAFÍA (INTACTO)
+# MOTOR SIG, EXTRACCIÓN DENUE Y DEMOGRAFÍA
 # ==============================================================================
 
 @st.cache_data
