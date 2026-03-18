@@ -210,7 +210,7 @@ with c_diag:
                 
     else:
         giro_in = st.text_input("Ingresa el giro comercial:")
-        if st.button("🎯 VALIDAR GIRO", type="primary", use_container_width=True):
+        if st.button("🎯 Validar predio", type="primary", use_container_width=True):
             if giro_in:
                 with st.spinner("Evaluando factibilidad..."):
                     st.session_state.ctx = ctx
