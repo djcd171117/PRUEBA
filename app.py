@@ -11,10 +11,11 @@ import json
 import re
 import requests
 
-# 1. CONFIGURACIÓN DE PÁGINA
+# ==============================================================================
+# 1. CONFIGURACIÓN DE PÁGINA (CONGELADA)
+# ==============================================================================
 st.set_page_config(page_title="Visor Urbano MAX", layout="wide")
 
-# 2. INICIALIZACIÓN DE CLIENTES
 try:
     G_CLIENT = googlemaps.Client(key=st.secrets["G_MAPS_KEY"])
     gemini_client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
@@ -30,9 +31,10 @@ except Exception as e:
 @st.cache_data
 def obtener_poligonos_edificios(lat, lon, dist=200):
     try:
+        # Descargamos los polígonos de OpenStreetMap
         return ox.features_from_point((lat, lon), tags={'building': True}, dist=dist)
     except:
-        return gpd.GeoDataFrame()
+        return gpd.GeoDataFrame() # Si falla la red o no hay edificios, devuelve vacío para no romper la app
 
 def consultar_api_denue_inegi(lat, lon):
     if not INEGI_TOKEN:
@@ -48,13 +50,12 @@ def consultar_api_denue_inegi(lat, lon):
         return 0
 
 def obtener_datos_demograficos(lat, lon):
-    # Simulador de métricas. Aquí luego conectarás tu GeoJSON real de AGEBs.
-    # Ajustado a tus parámetros de Posgrado y Edad Económicamente Madura
+    # Simulador ajustado. La etiqueta ahora es clara para el usuario.
     return {
         "poblacion_estimada": 8500,
         "viviendas_habitadas": 2100,
-        "escolaridad_promedio": 18.5, # 18+ Años de estudio = Maestría/Doctorado
-        "edad_promedio": 38 # Rango de edad con mayor poder adquisitivo
+        "nivel_educativo": "Educación Superior (Posgrado)", # TEXTO CLARO EN VEZ DE NÚMEROS
+        "edad_promedio": 38
     }
 
 def obtener_contexto_local(lat, lon):
@@ -64,12 +65,13 @@ def obtener_contexto_local(lat, lon):
     demo = obtener_datos_demograficos(lat, lon)
     ctx.update(demo)
     
-    # REGLAS DURAS DE GAMA COMERCIAL (Ajustadas a tu lógica de Posgrado)
-    if ctx["escolaridad_promedio"] >= 18 or (ctx["escolaridad_promedio"] >= 16 and ctx["edad_promedio"] >= 35):
+    # Reglas de gama basadas en el texto del nivel educativo
+    nivel = ctx["nivel_educativo"].lower()
+    if "posgrado" in nivel or ("superior" in nivel and ctx["edad_promedio"] >= 35):
         ctx["gama_sugerida_por_datos"] = "Premium / Lujo (Target A/B)"
-    elif ctx["escolaridad_promedio"] >= 15:
+    elif "superior" in nivel:
         ctx["gama_sugerida_por_datos"] = "Alta"
-    elif ctx["escolaridad_promedio"] >= 12:
+    elif "media" in nivel:
         ctx["gama_sugerida_por_datos"] = "Media"
     else:
         ctx["gama_sugerida_por_datos"] = "Básica / Popular"
@@ -101,8 +103,8 @@ def consultar_ai(radiografia, tipo_analisis, giro=None):
         else:
             prompt = f"""
             Actúa como Director de Desarrollo Inmobiliario PropTech. Analiza este entorno: {radiografia}.
-            REGLA DE ORO: La clasificación dura de la zona es '{radiografia['gama_sugerida_por_datos']}'. 
-            Es imperativo que el mix de giros corresponda estrictamente a este nivel socioeconómico. NO sugieras giros masivos o de bajo ticket en zonas Premium.
+            REGLA DE ORO: La clasificación de la zona es '{radiografia['gama_sugerida_por_datos']}'. 
+            El mix de giros debe corresponder estrictamente a este nivel socioeconómico. NO sugieras giros de bajo ticket en zonas Premium.
             
             Analiza cómo la densidad comercial (DENUE) y el perfil demográfico justifican este ecosistema.
             
@@ -110,7 +112,7 @@ def consultar_ai(radiografia, tipo_analisis, giro=None):
             {{
                 "analisis_entorno": {{
                     "gama_confirmada": "Nivel socioeconómico objetivo",
-                    "influencia_infraestructura": "Explicación técnica de la saturación comercial y perfil demográfico..."
+                    "influencia_infraestructura": "Explicación de la saturación comercial y perfil..."
                 }},
                 "giros": [
                     {{"giro": "Nombre", "viabilidad": 90, "categoria": "Categoría", "justificacion": "Por qué es viable"}}
@@ -129,14 +131,12 @@ def consultar_ai(radiografia, tipo_analisis, giro=None):
         return {"error": f"Error de Conexión: {str(e)}"}
 
 # ==============================================================================
-# INTERFAZ VISUAL
+# INTERFAZ VISUAL (ETIQUETAS CONGELADAS)
 # ==============================================================================
 
-# LÓGICA DE PURGA PARA EVITAR VALUE ERROR POR DATAFRAMES RESIDUALES
 if 'c_lat' not in st.session_state:
     st.session_state.update({'c_lat': 20.605, 'c_lng': -100.382, 'res_ia': None, 'tipo_res': None, 'ctx': {}})
 
-# Si quedó un DataFrame atrapado en la memoria de sesiones anteriores, lo limpiamos
 if isinstance(st.session_state.get('res_ia'), pd.DataFrame):
     st.session_state.res_ia = None
 
@@ -147,19 +147,27 @@ c_map, c_diag = st.columns([2, 1])
 
 with c_map:
     lat, lon = st.session_state.c_lat, st.session_state.c_lng
-    m = folium.Map(location=[lat, lon], zoom_start=17, tiles='CartoDB positron')
+    m = folium.Map(location=[lat, lon], zoom_start=16, tiles='CartoDB positron') # Zoom alejado ligeramente para ver el radio de 1000m
     
+    # 1. POLÍGONOS DE CONSTRUCCIÓN (Tonalidad Ligera Asegurada)
     with st.spinner("Cargando huellas constructivas (OSM)..."):
         buildings_gdf = obtener_poligonos_edificios(lat, lon, dist=200)
         if not buildings_gdf.empty:
             folium.GeoJson(
                 buildings_gdf, 
-                style_function=lambda x: {'fillColor': '#8A2BE2', 'color': '#4B0082', 'weight': 1, 'fillOpacity': 0.3}
+                # Color morado suave con alta transparencia (opacity 0.15)
+                style_function=lambda x: {'fillColor': '#9b59b6', 'color': '#8e44ad', 'weight': 1, 'fillOpacity': 0.15}
             ).add_to(m)
 
-    folium.Circle([lat, lon], radius=50, color='blue', fill=True, opacity=0.1, tooltip="Inmediato (50m)").add_to(m)
-    folium.Circle([lat, lon], radius=200, color='orange', weight=2, fill=False, dash_array='5,5', tooltip="Peatonal (200m)").add_to(m)
-    folium.Circle([lat, lon], radius=1000, color='red', weight=1, fill=False, tooltip="Destino (1000m)").add_to(m)
+    # 2. LOS 3 RADIOS DE ANÁLISIS (Marcados claramente)
+    # 50m - Azul claro con relleno
+    folium.Circle([lat, lon], radius=50, color='#3498db', fill=True, fill_opacity=0.2, weight=1, tooltip="Micro (50m)").add_to(m)
+    # 200m - Naranja punteado, sin relleno
+    folium.Circle([lat, lon], radius=200, color='#e67e22', weight=2, dash_array='5,5', fill=False, tooltip="Meso (200m)").add_to(m)
+    # 1000m - Rojo sólido delgado, sin relleno
+    folium.Circle([lat, lon], radius=1000, color='#e74c3c', weight=1.5, fill=False, tooltip="Macro (1000m)").add_to(m)
+    
+    # Marcador Central
     folium.Marker([lat, lon]).add_to(m)
 
     map_res = st_folium(m, width="100%", height=550, key="visor_mvp")
@@ -177,7 +185,8 @@ with c_diag:
     
     st.markdown("**Pulso del Micro-Entorno (Radio 250m):**")
     m1, m2 = st.columns(2)
-    m1.metric("Escolaridad Promedio", f"{ctx.get('escolaridad_promedio', 0)} Años")
+    # AHORA MUESTRA TEXTO CLARO EN VEZ DE NÚMEROS DE AÑOS
+    m1.metric("Nivel Educativo", ctx.get('nivel_educativo', 'N/D'))
     m2.metric("Gama Estimada", ctx.get('gama_sugerida_por_datos', 'N/D'))
     st.metric("Volumen Comercial (DENUE)", f"{ctx.get('negocios_denue_250m', 0)} locales activos")
 
@@ -203,14 +212,12 @@ with c_diag:
 # RESULTADOS
 # ==============================================================================
 
-# Aquí está el blindaje para que jamás vuelva a dar ValueError con Pandas
 if st.session_state.get('res_ia') is not None:
     st.markdown("---")
     
     if st.session_state.get('tipo_res') == "Barrido":
         datos = st.session_state.res_ia
         
-        # Validación de seguridad si el diccionario llegó mal
         if isinstance(datos, dict) and "error" in datos:
             st.error("Error al generar el dictamen. Intenta de nuevo.")
             st.write(datos.get("raw", ""))
