@@ -13,11 +13,10 @@ import requests
 # 1. CONFIGURACIÓN DE PÁGINA
 st.set_page_config(page_title="Visor Urbano MAX", layout="wide")
 
-# 2. INICIALIZACIÓN DE CLIENTES Y CREDENCIALES
+# 2. INICIALIZACIÓN DE CLIENTES
 try:
     G_CLIENT = googlemaps.Client(key=st.secrets["G_MAPS_KEY"])
     gemini_client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
-    # Usa .get() para evitar caídas si aún no configuras el token de INEGI en secrets
     INEGI_TOKEN = st.secrets.get("INEGI_TOKEN", "") 
 except Exception as e:
     st.error(f"Faltan credenciales en los Secrets: {e}")
@@ -29,28 +28,36 @@ except Exception as e:
 
 @st.cache_data
 def obtener_poligonos_edificios(lat, lon):
-    # Descarga huellas constructivas (polígonos) en un radio de 200m
+    # Descarga huellas constructivas (polígonos) en radio de 200m
     try:
         return ox.features_from_point((lat, lon), {'building': True}, dist=200)
     except:
         return gpd.GeoDataFrame()
 
 def consultar_api_denue_inegi(lat, lon):
-    # Consulta en vivo al DENUE (INEGI) para medir saturación comercial real
-    if not INEGI_TOKEN:
-        return "Token de INEGI faltante"
+    # Consulta en vivo al DENUE con BLINDAJE ANTI-BLOQUEO
+    if not INEGI_TOKEN or INEGI_TOKEN == "":
+        return "Token de INEGI faltante en Secrets"
     
     url = f"https://www.inegi.org.mx/app/api/denue/v1/consulta/Buscar/todos/{lat},{lon}/250/{INEGI_TOKEN}"
+    
+    # Engañamos al servidor de INEGI para que crea que somos un navegador Chrome real
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    
     try:
-        res = requests.get(url, timeout=5)
+        # Aumentamos el timeout a 10 segundos porque INEGI suele ser lento
+        res = requests.get(url, headers=headers, timeout=10)
         if res.status_code == 200:
-            return f"{len(res.json())} negocios formales (Radio 250m)"
-        return "Error en API INEGI"
-    except:
-        return "Falla de conexión a INEGI"
+            datos = res.json()
+            return f"{len(datos)} negocios formales (Radio 250m)"
+        return f"Error API INEGI (Código: {res.status_code})"
+    except requests.exceptions.Timeout:
+        return "INEGI tardó demasiado en responder (Timeout)"
+    except Exception as e:
+        return f"Falla de conexión a INEGI"
 
 def obtener_contexto_local(lat, lon):
-    # Agrupa datos de Google Places y DENUE para alimentar a la IA
+    # Agrupa datos de Google Places y DENUE
     ctx = {}
     try:
         places = G_CLIENT.places_nearby(location=(lat, lon), radius=200)
@@ -66,7 +73,7 @@ def obtener_contexto_local(lat, lon):
 # ==============================================================================
 
 def procesar_json_robusto(texto_ia):
-    # Usa Regex para extraer solo el JSON, ignorando texto basura que genere Gemini
+    # Extrae solo el JSON ignorando basura
     match = re.search(r'\[.*\]', texto_ia, re.DOTALL)
     if match:
         try:
@@ -76,18 +83,19 @@ def procesar_json_robusto(texto_ia):
     return pd.DataFrame([{"giro": "Error", "viabilidad": 0, "categoria": "N/D", "justificacion": "Error de formato JSON"}])
 
 def consultar_ia(ctx, tipo_analisis, giro=None):
-    # Llama a Gemini usando la sintaxis correcta del SDK actual
+    # CORRECCIÓN DE MODELO: Usamos el alias universal más estable
+    modelo_gemini = 'gemini-1.5-flash-latest' 
+    
     if tipo_analisis == "Validacion":
         prompt = f"""Evalúa la viabilidad del giro '{giro}' en estas coordenadas con este contexto: {ctx}. 
         Responde breve y técnico: 1. Viabilidad general. 2. Riesgo principal. 3. Oportunidad."""
     else:
-        # Pide un barrido exhaustivo (sin límite de 8 giros) y fuerza estructura JSON
         prompt = f"""Realiza un barrido exhaustivo de categorías comerciales viables para este punto: {ctx}.
         Omite giros con viabilidad menor a 70. 
         Devuelve EXCLUSIVAMENTE un JSON: [{{"giro": "Nombre", "viabilidad": 0-100, "categoria": "Servicios/Alimentos/etc", "justificacion": "Datos"}}]"""
 
     try:
-        res = gemini_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+        res = gemini_client.models.generate_content(model=modelo_gemini, contents=prompt)
         return res.text
     except Exception as e:
         return f"Error de IA: {e}"
@@ -96,11 +104,10 @@ def consultar_ia(ctx, tipo_analisis, giro=None):
 # INTERFAZ VISUAL Y GESTIÓN DE ESTADO
 # ==============================================================================
 
-# Variables de sesión para mantener el estado del mapa y resultados
 if 'c_lat' not in st.session_state:
     st.session_state.update({'c_lat': 20.605, 'c_lng': -100.382, 'res_ia': None, 'tipo_res': None})
 
-st.title("Visor Urbano")
+st.title("Visor Urbano MAX")
 
 c_map, c_diag = st.columns([2, 1])
 
@@ -108,22 +115,18 @@ with c_map:
     lat, lon = st.session_state.c_lat, st.session_state.c_lng
     m = folium.Map(location=[lat, lon], zoom_start=17, tiles='CartoDB positron')
     
-    # Dibuja polígonos morados (OSM)
     edificios = obtener_poligonos_edificios(lat, lon)
     if not edificios.empty:
         folium.GeoJson(edificios, style_function=lambda x: {'fillColor': '#8A2BE2', 'color': '#4B0082', 'weight': 1, 'fillOpacity': 0.3}).add_to(m)
 
-    # Dibuja radios metodológicos
     folium.Circle([lat, lon], radius=50, color='blue', fill=True, opacity=0.1).add_to(m)
     folium.Circle([lat, lon], radius=200, color='orange', weight=2, fill=False).add_to(m)
     folium.Circle([lat, lon], radius=1000, color='red', weight=1, fill=False).add_to(m)
     folium.Marker([lat, lon]).add_to(m)
 
-    # Renderiza mapa e intercepta clics
     map_res = st_folium(m, width="100%", height=550, key="visor_mvp")
     
     if map_res.get("last_clicked"):
-        # Actualiza coordenadas y limpia resultados previos al mover el pin
         st.session_state.c_lat, st.session_state.c_lng = map_res["last_clicked"]["lat"], map_res["last_clicked"]["lng"]
         st.session_state.res_ia = None
         st.rerun()
@@ -131,14 +134,11 @@ with c_map:
 with c_diag:
     st.subheader("Herramientas de Diagnóstico")
     
-    # Selector de flujo antes de ejecutar
     opcion = st.radio("Selecciona la ruta de análisis:", ["Barrido General de Mercado", "Validar Giro Específico"])
     
-    # Extrae datos reales antes del clic
     ctx = obtener_contexto_local(st.session_state.c_lat, st.session_state.c_lng)
     st.info(f"📊 INEGI (DENUE): {ctx['saturacion_inegi']}")
 
-    # Ejecución Ruta A: Exhaustiva
     if opcion == "Barrido General de Mercado":
         if st.button("EJECUTAR BARRIDO", type="primary", use_container_width=True):
             with st.spinner("Analizando mercado..."):
@@ -146,7 +146,6 @@ with c_diag:
                 st.session_state.tipo_res = "Barrido"
                 st.rerun()
                 
-    # Ejecución Ruta B: Quirúrgica
     else:
         giro_in = st.text_input("Ingresa el giro:")
         if st.button("VALIDAR GIRO", type="primary", use_container_width=True):
@@ -167,11 +166,9 @@ if st.session_state.get('res_ia'):
     
     if st.session_state.get('tipo_res') == "Barrido":
         st.subheader("Resultados del Barrido")
-        # Convierte la respuesta de la IA en DataFrame
         df = procesar_json_robusto(st.session_state.res_ia)
         
         if not df.empty and "giro" in df.columns:
-            # Gráfica promedio por categoría si la IA respetó el formato
             if "categoria" in df.columns:
                 st.bar_chart(df.groupby("categoria")["viabilidad"].mean())
             st.dataframe(df.sort_values(by="viabilidad", ascending=False), use_container_width=True)
