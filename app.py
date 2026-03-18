@@ -14,7 +14,7 @@ import requests
 # ==============================================================================
 # 1. CONFIGURACIÓN DE PÁGINA (CONGELADA)
 # ==============================================================================
-st.set_page_config(page_title="Visor Urbano MAX", layout="wide")
+st.set_page_config(page_title="Visor Urbano", layout="wide")
 
 try:
     G_CLIENT = googlemaps.Client(key=st.secrets["G_MAPS_KEY"])
