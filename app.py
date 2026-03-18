@@ -193,7 +193,7 @@ with c_map:
 with c_diag:
     st.subheader("Configuración de Análisis")
     
-    opcion = st.radio("Modo de Inteligencia:", ["Diagnóstico Urbano", "Validar Giro"])
+    opcion = st.radio("Modo de Inteligencia:", ["Diagnóstico Urbano", "Validar proyecto"])
     
     # Extraemos contexto pero NO lo mostramos aquí, lo guardamos para el análisis
     ctx = obtener_contexto_local(st.session_state.c_lat, st.session_state.c_lng)
