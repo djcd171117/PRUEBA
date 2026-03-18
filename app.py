@@ -12,7 +12,7 @@ import re
 import requests
 
 # ==============================================================================
-# 1. CONFIGURACIÓN DE PÁGINA (CONGELADA)
+# 1. CONFIGURACIÓN DE PÁGINA
 # ==============================================================================
 st.set_page_config(page_title="Visor Urbano MAX", layout="wide")
 
@@ -25,16 +25,27 @@ except Exception as e:
     st.stop()
 
 # ==============================================================================
-# MOTOR SIG, EXTRACCIÓN DENUE Y DEMOGRAFÍA
+# MOTOR SIG, EXTRACCIÓN DENUE Y DEMOGRAFÍA (INTACTO)
 # ==============================================================================
 
 @st.cache_data
 def obtener_poligonos_edificios(lat, lon, dist=200):
     try:
-        # Descargamos los polígonos de OpenStreetMap
         return ox.features_from_point((lat, lon), tags={'building': True}, dist=dist)
     except:
-        return gpd.GeoDataFrame() # Si falla la red o no hay edificios, devuelve vacío para no romper la app
+        return gpd.GeoDataFrame()
+
+@st.cache_data
+def obtener_vialidades_principales(lat, lon, dist=1000):
+    # NUEVA FUNCIÓN: Extrae solo avenidas y calles principales conectadas
+    try:
+        tags = {'highway': ['primary', 'secondary', 'tertiary', 'trunk']}
+        roads = ox.features_from_point((lat, lon), tags=tags, dist=dist)
+        # Filtramos para asegurarnos de que solo sean líneas (evitar errores geométricos)
+        roads = roads[roads.geometry.type.isin(['LineString', 'MultiLineString'])]
+        return roads
+    except:
+        return gpd.GeoDataFrame()
 
 def consultar_api_denue_inegi(lat, lon):
     if not INEGI_TOKEN:
@@ -50,22 +61,19 @@ def consultar_api_denue_inegi(lat, lon):
         return 0
 
 def obtener_datos_demograficos(lat, lon):
-    # Simulador ajustado. La etiqueta ahora es clara para el usuario.
     return {
         "poblacion_estimada": 8500,
         "viviendas_habitadas": 2100,
-        "nivel_educativo": "Educación Superior (Posgrado)", # TEXTO CLARO EN VEZ DE NÚMEROS
+        "nivel_educativo": "Educación Superior (Posgrado)", 
         "edad_promedio": 38
     }
 
 def obtener_contexto_local(lat, lon):
     ctx = {}
     ctx["negocios_denue_250m"] = consultar_api_denue_inegi(lat, lon)
-    
     demo = obtener_datos_demograficos(lat, lon)
     ctx.update(demo)
     
-    # Reglas de gama basadas en el texto del nivel educativo
     nivel = ctx["nivel_educativo"].lower()
     if "posgrado" in nivel or ("superior" in nivel and ctx["edad_promedio"] >= 35):
         ctx["gama_sugerida_por_datos"] = "Premium / Lujo (Target A/B)"
@@ -79,7 +87,7 @@ def obtener_contexto_local(lat, lon):
     return ctx
 
 # ==============================================================================
-# MOTOR IA ESTRUCTURADO (GAMA + GIROS)
+# MOTOR IA ESTRUCTURADO (INTACTO)
 # ==============================================================================
 
 def procesar_json_complejo(texto_ia):
@@ -131,7 +139,7 @@ def consultar_ai(radiografia, tipo_analisis, giro=None):
         return {"error": f"Error de Conexión: {str(e)}"}
 
 # ==============================================================================
-# INTERFAZ VISUAL (ETIQUETAS CONGELADAS)
+# INTERFAZ VISUAL (ETIQUETAS ACTUALIZADAS)
 # ==============================================================================
 
 if 'c_lat' not in st.session_state:
@@ -140,34 +148,42 @@ if 'c_lat' not in st.session_state:
 if isinstance(st.session_state.get('res_ia'), pd.DataFrame):
     st.session_state.res_ia = None
 
+# TÍTULOS ACTUALIZADOS SEGÚN TU PETICIÓN
 st.title("Visor Urbano MAX")
-st.markdown("### Plataforma de Inteligencia Sociodemográfica y Territorial")
+st.markdown("### Plataforma de Inteligencia Urbana")
 
 c_map, c_diag = st.columns([2, 1])
 
 with c_map:
     lat, lon = st.session_state.c_lat, st.session_state.c_lng
-    m = folium.Map(location=[lat, lon], zoom_start=16, tiles='CartoDB positron') # Zoom alejado ligeramente para ver el radio de 1000m
+    m = folium.Map(location=[lat, lon], zoom_start=16, tiles='CartoDB positron') 
     
-    # 1. POLÍGONOS DE CONSTRUCCIÓN (Tonalidad Ligera Asegurada)
-    with st.spinner("Cargando huellas constructivas (OSM)..."):
+    # 1. POLÍGONOS DE CONSTRUCCIÓN (MÁS VISIBLES: Opacidad de 0.15 a 0.4)
+    with st.spinner("Cargando huellas constructivas..."):
         buildings_gdf = obtener_poligonos_edificios(lat, lon, dist=200)
         if not buildings_gdf.empty:
             folium.GeoJson(
                 buildings_gdf, 
-                # Color morado suave con alta transparencia (opacity 0.15)
-                style_function=lambda x: {'fillColor': '#9b59b6', 'color': '#8e44ad', 'weight': 1, 'fillOpacity': 0.15}
+                style_function=lambda x: {'fillColor': '#9b59b6', 'color': '#8e44ad', 'weight': 1.5, 'fillOpacity': 0.4}
             ).add_to(m)
 
-    # 2. LOS 3 RADIOS DE ANÁLISIS (Marcados claramente)
-    # 50m - Azul claro con relleno
+    # 2. VIALIDADES (SOLO APARECEN DESPUÉS DE ACCIONAR EL ANÁLISIS)
+    if st.session_state.get('res_ia') is not None:
+        with st.spinner("Trazando conectividad vial..."):
+            roads_gdf = obtener_vialidades_principales(lat, lon, dist=1000)
+            if not roads_gdf.empty:
+                folium.GeoJson(
+                    roads_gdf,
+                    # Estilo de vialidades: Gris oscuro/Negro
+                    style_function=lambda x: {'color': '#2c3e50', 'weight': 3.5, 'opacity': 0.8},
+                    tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['Vialidad:'], localize=True)
+                ).add_to(m)
+
+    # 3. LOS 3 RADIOS DE ANÁLISIS
     folium.Circle([lat, lon], radius=50, color='#3498db', fill=True, fill_opacity=0.2, weight=1, tooltip="Micro (50m)").add_to(m)
-    # 200m - Naranja punteado, sin relleno
     folium.Circle([lat, lon], radius=200, color='#e67e22', weight=2, dash_array='5,5', fill=False, tooltip="Meso (200m)").add_to(m)
-    # 1000m - Rojo sólido delgado, sin relleno
     folium.Circle([lat, lon], radius=1000, color='#e74c3c', weight=1.5, fill=False, tooltip="Macro (1000m)").add_to(m)
     
-    # Marcador Central
     folium.Marker([lat, lon]).add_to(m)
 
     map_res = st_folium(m, width="100%", height=550, key="visor_mvp")
@@ -179,18 +195,20 @@ with c_map:
 
 with c_diag:
     st.subheader("Configuración de Análisis")
-    opcion = st.radio("Modo de Inteligencia:", ["Diagnóstico de Gama y Barrido", "Validar Giro Específico"])
+    
+    # ETIQUETAS DE RADIO BUTTON ACTUALIZADAS SEGÚN TU PETICIÓN
+    opcion = st.radio("Modo de Inteligencia:", ["Diagnóstico Urbano", "Validar Giro"])
     
     ctx = obtener_contexto_local(st.session_state.c_lat, st.session_state.c_lng)
     
     st.markdown("**Pulso del Micro-Entorno (Radio 250m):**")
     m1, m2 = st.columns(2)
-    # AHORA MUESTRA TEXTO CLARO EN VEZ DE NÚMEROS DE AÑOS
     m1.metric("Nivel Educativo", ctx.get('nivel_educativo', 'N/D'))
     m2.metric("Gama Estimada", ctx.get('gama_sugerida_por_datos', 'N/D'))
     st.metric("Volumen Comercial (DENUE)", f"{ctx.get('negocios_denue_250m', 0)} locales activos")
 
-    if opcion == "Diagnóstico de Gama y Barrido":
+    # LÓGICA DE BOTONES ACTUALIZADA CON LAS NUEVAS ETIQUETAS
+    if opcion == "Diagnóstico Urbano":
         if st.button("EJECUTAR DIAGNÓSTICO", type="primary", use_container_width=True):
             with st.spinner("Procesando perfil sociodemográfico y comercial..."):
                 st.session_state.ctx = ctx
