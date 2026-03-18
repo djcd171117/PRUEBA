@@ -13,7 +13,7 @@ import requests
 # 1. CONFIGURACIÓN DE PÁGINA
 st.set_page_config(page_title="Visor Urbano MAX", layout="wide")
 
-# 2. INICIALIZACIÓN DE CLIENTES
+# 2. INICIALIZACIÓN DE CLIENTES Y CREDENCIALES
 try:
     G_CLIENT = googlemaps.Client(key=st.secrets["G_MAPS_KEY"])
     gemini_client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
@@ -28,36 +28,27 @@ except Exception as e:
 
 @st.cache_data
 def obtener_poligonos_edificios(lat, lon):
-    # Descarga huellas constructivas (polígonos) en radio de 200m
     try:
         return ox.features_from_point((lat, lon), {'building': True}, dist=200)
     except:
         return gpd.GeoDataFrame()
 
 def consultar_api_denue_inegi(lat, lon):
-    # Consulta en vivo al DENUE con BLINDAJE ANTI-BLOQUEO
-    if not INEGI_TOKEN or INEGI_TOKEN == "":
-        return "Token de INEGI faltante en Secrets"
+    if not INEGI_TOKEN:
+        return "Token de INEGI faltante"
     
     url = f"https://www.inegi.org.mx/app/api/denue/v1/consulta/Buscar/todos/{lat},{lon}/250/{INEGI_TOKEN}"
-    
-    # Engañamos al servidor de INEGI para que crea que somos un navegador Chrome real
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
     
     try:
-        # Aumentamos el timeout a 10 segundos porque INEGI suele ser lento
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code == 200:
-            datos = res.json()
-            return f"{len(datos)} negocios formales (Radio 250m)"
-        return f"Error API INEGI (Código: {res.status_code})"
-    except requests.exceptions.Timeout:
-        return "INEGI tardó demasiado en responder (Timeout)"
-    except Exception as e:
-        return f"Falla de conexión a INEGI"
+            return f"{len(res.json())} negocios formales (Radio 250m)"
+        return "Error en API INEGI"
+    except:
+        return "Falla de conexión a INEGI"
 
 def obtener_contexto_local(lat, lon):
-    # Agrupa datos de Google Places y DENUE
     ctx = {}
     try:
         places = G_CLIENT.places_nearby(location=(lat, lon), radius=200)
@@ -73,7 +64,6 @@ def obtener_contexto_local(lat, lon):
 # ==============================================================================
 
 def procesar_json_robusto(texto_ia):
-    # Extrae solo el JSON ignorando basura
     match = re.search(r'\[.*\]', texto_ia, re.DOTALL)
     if match:
         try:
@@ -83,8 +73,8 @@ def procesar_json_robusto(texto_ia):
     return pd.DataFrame([{"giro": "Error", "viabilidad": 0, "categoria": "N/D", "justificacion": "Error de formato JSON"}])
 
 def consultar_ia(ctx, tipo_analisis, giro=None):
-    # CORRECCIÓN DE MODELO: Usamos el alias universal más estable
-    modelo_gemini = 'gemini-1.5-flash-latest' 
+    # Usando exactamente el modelo indicado en tu documentación
+    modelo_gemini = "gemini-3-flash-preview"
     
     if tipo_analisis == "Validacion":
         prompt = f"""Evalúa la viabilidad del giro '{giro}' en estas coordenadas con este contexto: {ctx}. 
@@ -92,7 +82,7 @@ def consultar_ia(ctx, tipo_analisis, giro=None):
     else:
         prompt = f"""Realiza un barrido exhaustivo de categorías comerciales viables para este punto: {ctx}.
         Omite giros con viabilidad menor a 70. 
-        Devuelve EXCLUSIVAMENTE un JSON: [{{"giro": "Nombre", "viabilidad": 0-100, "categoria": "Servicios/Alimentos/etc", "justificacion": "Datos"}}]"""
+        Devuelve EXCLUSIVAMENTE un arreglo JSON puro con esta estructura: [{{"giro": "Nombre", "viabilidad": 85, "categoria": "Servicios", "justificacion": "Datos"}}]"""
 
     try:
         res = gemini_client.models.generate_content(model=modelo_gemini, contents=prompt)
