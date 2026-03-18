@@ -1,12 +1,12 @@
 # ==============================================================================
-# CAPA 1: CONFIGURACIÓN Y CLIENTES (PROTEGIDA)
+# CAPA 1: CONFIGURACIÓN Y CLIENTES
 # ==============================================================================
 import streamlit as st
 import pandas as pd
 import geopandas as gpd
+import osmnx as ox  # RESTAURADO: Para los polígonos de edificios
 from shapely.geometry import Point
 import folium
-from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 import googlemaps
 from google import genai
@@ -14,7 +14,6 @@ import json
 
 st.set_page_config(page_title="Visor Urbano PropTech", layout="wide")
 
-# Inicialización segura desde Secrets
 try:
     G_CLIENT = googlemaps.Client(key=st.secrets["G_MAPS_KEY"])
     gemini_client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
@@ -23,56 +22,60 @@ except Exception as e:
     st.stop()
 
 # ==============================================================================
-# CAPA 2: MOTOR SIG (RADIOS METODOLÓGICOS)
+# CAPA 2: MOTOR SIG (POLÍGONOS Y CONTEXTO)
 # ==============================================================================
+
+@st.cache_data
+def obtener_poligonos_edificios(lat, lon):
+    """Descarga las huellas de los edificios de OpenStreetMap en un radio de 200m"""
+    try:
+        tags = {'building': True}
+        edificios = ox.features_from_point((lat, lon), tags, dist=200)
+        return edificios
+    except:
+        return gpd.GeoDataFrame()
 
 def obtener_contexto_local(lat, lon):
-    """Extrae pulso comercial real de Google para alimentar a la IA."""
+    """Extrae pulso comercial real de Google."""
     try:
-        # Buscamos negocios en radio meso (200m)
         places = G_CLIENT.places_nearby(location=(lat, lon), radius=200)
         negocios = len(places.get('results', []))
-        
-        # Clasificación simple de entorno basada en densidad de Google
         entorno = "Consolidado" if negocios > 15 else "En Desarrollo / Habitacional"
-        
-        return {
-            "negocios_cercanos": negocios,
-            "tipo_entorno": entorno,
-            "coordenadas": f"{lat}, {lon}"
-        }
+        return {"negocios_cercanos": negocios, "tipo_entorno": entorno, "coordenadas": f"{lat}, {lon}"}
     except:
-        return {"negocios_cercanos": 0, "tipo_entorno": "No detectado", "coordenadas": f"{lat}, {lon}"}
+        return {"negocios_cercanos": 0, "tipo_entorno": "No detectado"}
 
 # ==============================================================================
-# CAPA 3: MOTOR DE IA (OPCIÓN A Y B)
+# CAPA 3: MOTOR DE IA (NUEVA SINTAXIS GOOGLE GENAI)
 # ==============================================================================
 
-def consultar_ai(ctx, giro_usuario=None):
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+def consultar_ai(ctx, tipo_analisis, giro_usuario=None):
+    """Llama a Gemini usando la sintaxis correcta de la nueva librería."""
     
-    if giro_usuario:
-        # OPCIÓN B: Simulador de Giro Específico
+    if tipo_analisis == "Validacion":
         prompt = f"""Analiza la viabilidad del giro '{giro_usuario}' en este punto de Querétaro: {ctx}. 
-        Responde en 4 líneas: Viabilidad (%), Riesgo principal y Oportunidad detectada."""
+        Responde en 4 líneas: Viabilidad general, Riesgo principal y Oportunidad detectada."""
     else:
-        # OPCIÓN A: Recomendación Automática (8 Giros)
         prompt = f"""Basado en este contexto urbano de Querétaro: {ctx}. 
         Sugiere 8 giros comerciales específicos para México. 
-        Devuelve SOLO un JSON: [{{"giro": "Nombre", "viabilidad": 0-100, "justificacion": "Breve"}}]"""
+        Devuelve EXCLUSIVAMENTE un JSON: [{{"giro": "Nombre", "viabilidad": 0-100, "justificacion": "Breve"}}]"""
 
     try:
-        response = model.generate_content(prompt)
+        # CORRECCIÓN DEL ERROR ATTRIBUTE_ERROR
+        response = gemini_client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=prompt
+        )
         return response.text
     except Exception as e:
         return f"Error en la IA: {str(e)}"
 
 # ==============================================================================
-# CAPA 4: INTERFAZ VISUAL (SOBRIA)
+# CAPA 4: INTERFAZ VISUAL Y FLUJO DE USUARIO
 # ==============================================================================
 
 if 'c_lat' not in st.session_state:
-    st.session_state.update({'c_lat': 20.605, 'c_lng': -100.382, 'analisis': False, 'map_layer': None})
+    st.session_state.update({'c_lat': 20.605, 'c_lng': -100.382, 'resultado_ai': None, 'tipo_resultado': None})
 
 st.title("Visor Urbano")
 
@@ -82,68 +85,87 @@ with c_map:
     lat, lon = st.session_state.c_lat, st.session_state.c_lng
     m = folium.Map(location=[lat, lon], zoom_start=17, tiles='CartoDB positron')
     
-    # 1. Capas de Calor bajo demanda (Si tienes el CSV de INEGI, aquí se activan)
-    if st.session_state.map_layer == 'DEMO':
-        st.info("Capa de Calor de Demografía Activada (Simulada)")
-        # HeatMap([[lat, lon, 1]]).add_to(m) 
+    # 1. RESTAURAR POLÍGONOS MORADOS
+    edificios = obtener_poligonos_edificios(lat, lon)
+    if not edificios.empty:
+        folium.GeoJson(
+            edificios, 
+            style_function=lambda x: {'fillColor': '#8A2BE2', 'color': '#4B0082', 'weight': 1, 'fillOpacity': 0.3}
+        ).add_to(m)
 
-    # 2. Radios de Tesis (50m, 200m, 1000m)
+    # 2. Radios Metodológicos
     folium.Circle([lat, lon], radius=50, color='blue', fill=True, opacity=0.1).add_to(m)
     folium.Circle([lat, lon], radius=200, color='orange', weight=2, fill=False).add_to(m)
     folium.Circle([lat, lon], radius=1000, color='red', weight=1, fill=False).add_to(m)
-    folium.Marker([lat, lon], icon=folium.Icon(color='black', icon='location-dot', prefix='fa')).add_to(m)
+    folium.Marker([lat, lon], icon=folium.Icon(color='black')).add_to(m)
 
-    map_res = st_folium(m, width="100%", height=500, key="visor_v2")
+    map_res = st_folium(m, width="100%", height=500, key="visor_v3")
     
     if map_res.get("last_clicked"):
         st.session_state.c_lat, st.session_state.c_lng = map_res["last_clicked"]["lat"], map_res["last_clicked"]["lng"]
-        st.session_state.analisis = False
-        st.session_state.map_layer = None
+        st.session_state.resultado_ai = None # Limpiamos resultados al mover el punto
         st.rerun()
 
 with c_diag:
     st.subheader("Herramientas de Diagnóstico")
-    if st.button("INICIAR INTELIGENCIA URBANA", type="primary", use_container_width=True):
-        ctx = obtener_contexto_local(st.session_state.c_lat, st.session_state.c_lng)
-        st.session_state.ctx = ctx
-        # Obtener recomendación automática
-        res_raw = consultar_ai(ctx)
-        st.session_state.res_auto = res_raw
-        st.session_state.analisis = True
-        st.session_state.modo = 'AUTO'
-        st.rerun()
-
-    if st.session_state.get('analisis'):
-        st.markdown("---")
-        st.write("**Opción B: Simulador de Giro Propio**")
-        giro_test = st.text_input("Ingresa un giro para evaluar:", placeholder="ej. Cafetería")
-        if st.button("Validar mi Giro"):
-            st.session_state.res_user = consultar_ai(st.session_state.ctx, giro_test)
-            st.session_state.modo = 'USER'
-            st.rerun()
-
-# ==============================================================================
-# RESULTADOS Y REPORTES
-# ==============================================================================
-if st.session_state.get('analisis'):
+    
+    # NUEVA INTERFAZ: Selección de ruta antes del botón
+    opcion_analisis = st.radio(
+        "Selecciona el tipo de análisis:",
+        ["Diagnóstico de Entorno (8 Giros)", "Validación de Giro Específico"],
+        index=0
+    )
+    
+    ctx = obtener_contexto_local(st.session_state.c_lat, st.session_state.c_lng)
+    
     st.markdown("---")
     
-    if st.session_state.modo == 'AUTO':
-        st.subheader("Opción A: Dictamen Automático")
-        st.write(st.session_state.res_auto)
-    else:
-        st.subheader(f"Opción B: Evaluación de {giro_test}")
-        st.success(st.session_state.res_user)
-        if st.button("Volver a recomendaciones"):
-            st.session_state.modo = 'AUTO'
-            st.rerun()
+    # RUTA A: DIAGNÓSTICO
+    if opcion_analisis == "Diagnóstico de Entorno (8 Giros)":
+        if st.button("INICIAR DIAGNÓSTICO", type="primary", use_container_width=True):
+            with st.spinner("Generando dictamen..."):
+                res_texto = consultar_ai(ctx, "Diagnostico")
+                st.session_state.resultado_ai = res_texto
+                st.session_state.tipo_resultado = "Diagnostico"
+                st.rerun()
+                
+    # RUTA B: VALIDACIÓN
+    elif opcion_analisis == "Validación de Giro Específico":
+        giro_input = st.text_input("Ingresa el giro a evaluar:", placeholder="Ej. Farmacia, Taquería...")
+        if st.button("VALIDAR GIRO", type="primary", use_container_width=True):
+            if giro_input:
+                with st.spinner(f"Analizando viabilidad para {giro_input}..."):
+                    res_texto = consultar_ai(ctx, "Validacion", giro_input)
+                    st.session_state.resultado_ai = res_texto
+                    st.session_state.tipo_resultado = "Validacion"
+                    st.rerun()
+            else:
+                st.warning("Por favor ingresa un giro comercial.")
 
+# ==============================================================================
+# VISUALIZACIÓN DE RESULTADOS
+# ==============================================================================
+if st.session_state.resultado_ai:
     st.markdown("---")
-    st.subheader("Centro de Reportes (PNG)")
-    col1, col2 = st.columns(2)
-    if col1.button("Capturar Demografía"):
-        st.session_state.map_layer = 'DEMO'
-        st.rerun()
-    if col2.button("Capturar Escolaridad"):
-        st.session_state.map_layer = 'EDU'
-        st.rerun()
+    st.subheader("Resultados de Inteligencia Espacial")
+    
+    # Mostrar resultados de Diagnóstico (Gráfica y Tabla)
+    if st.session_state.tipo_resultado == "Diagnostico":
+        try:
+            # Limpiar el texto para asegurar que es JSON
+            raw_text = st.session_state.resultado_ai
+            start = raw_text.find('[')
+            end = raw_text.rfind(']') + 1
+            json_str = raw_text[start:end]
+            
+            df_giros = pd.DataFrame(json.loads(json_str))
+            
+            st.bar_chart(df_giros.set_index("giro")['viabilidad'])
+            st.dataframe(df_giros, use_container_width=True)
+        except Exception as e:
+            st.error("Error al procesar la respuesta de la IA. Por favor, intenta de nuevo.")
+            st.write(st.session_state.resultado_ai) # Mostrar texto crudo por si falla
+            
+    # Mostrar resultados de Validación (Texto)
+    elif st.session_state.tipo_resultado == "Validacion":
+        st.success(st.session_state.resultado_ai)
