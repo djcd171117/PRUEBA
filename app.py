@@ -42,37 +42,33 @@ def consultar_api_denue_inegi(lat, lon):
     try:
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code == 200:
-            return len(res.json()) # Devolvemos el número entero para usarlo en reglas
+            return len(res.json())
         return 0
     except:
         return 0
 
 def obtener_datos_demograficos(lat, lon):
-    """
-    AQUÍ CONECTARÁS TU GEOJSON DE AGEBS.
-    Por ahora, simulamos un polígono de Alta Gama (ej. Juriquilla / Campanario)
-    para forzar a la IA a dar recomendaciones Premium.
-    """
+    # Simulador de métricas. Aquí luego conectarás tu GeoJSON real de AGEBs.
+    # Ajustado a tus parámetros de Posgrado y Edad Económicamente Madura
     return {
         "poblacion_estimada": 8500,
         "viviendas_habitadas": 2100,
-        "escolaridad_promedio": 16.2, # Licenciatura/Posgrado -> Indica GAMA ALTA
-        "edad_promedio": 34
+        "escolaridad_promedio": 18.5, # 18+ Años de estudio = Maestría/Doctorado
+        "edad_promedio": 38 # Rango de edad con mayor poder adquisitivo
     }
 
 def obtener_contexto_local(lat, lon):
     ctx = {}
-    
-    # 1. Competencia DENUE
     ctx["negocios_denue_250m"] = consultar_api_denue_inegi(lat, lon)
     
-    # 2. Demografía (Tu proxy de nivel socioeconómico)
     demo = obtener_datos_demograficos(lat, lon)
     ctx.update(demo)
     
-    # 3. Regla dura de Gama (Para ayudar a la IA)
-    if ctx["escolaridad_promedio"] >= 15.5:
-        ctx["gama_sugerida_por_datos"] = "Alta / Premium"
+    # REGLAS DURAS DE GAMA COMERCIAL (Ajustadas a tu lógica de Posgrado)
+    if ctx["escolaridad_promedio"] >= 18 or (ctx["escolaridad_promedio"] >= 16 and ctx["edad_promedio"] >= 35):
+        ctx["gama_sugerida_por_datos"] = "Premium / Lujo (Target A/B)"
+    elif ctx["escolaridad_promedio"] >= 15:
+        ctx["gama_sugerida_por_datos"] = "Alta"
     elif ctx["escolaridad_promedio"] >= 12:
         ctx["gama_sugerida_por_datos"] = "Media"
     else:
@@ -85,7 +81,6 @@ def obtener_contexto_local(lat, lon):
 # ==============================================================================
 
 def procesar_json_complejo(texto_ia):
-    # Extrae el JSON complejo que ahora incluye análisis de entorno y array de giros
     match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
     if match:
         try:
@@ -99,27 +94,26 @@ def consultar_ai(radiografia, tipo_analisis, giro=None):
         model_name = 'gemini-3-flash-preview' 
         
         if tipo_analisis == "Validacion":
-            prompt = f"Analiza la viabilidad del giro '{giro}' en este predio de gama {radiografia['gama_sugerida_por_datos']} con este contexto: {radiografia}. Considera la densidad de DENUE ({radiografia['negocios_denue_250m']} negocios). Responde: 1. Viabilidad. 2. Riesgo. 3. Oportunidad."
+            prompt = f"Analiza la viabilidad del giro '{giro}' en este predio de gama '{radiografia['gama_sugerida_por_datos']}' con este contexto: {radiografia}. Considera la densidad comercial (DENUE: {radiografia['negocios_denue_250m']} locales). Responde: 1. Viabilidad. 2. Riesgo. 3. Oportunidad."
             response = gemini_client.models.generate_content(model=model_name, contents=prompt)
             return response.text
             
         else:
-            # PROMPT ULTRA-ESTRICTO: Obligamos a la IA a respetar la Gama y dar justificaciones de infraestructura
             prompt = f"""
-            Actúa como Director de Desarrollo Inmobiliario PropTech. Analiza este predio y su entorno: {radiografia}.
-            REGLA DE ORO: La escolaridad es {radiografia['escolaridad_promedio']} años. Esto define la gama como '{radiografia['gama_sugerida_por_datos']}'. 
-            NO sugieras negocios de gama baja (ej. lavanderías de barrio, minisupers genéricos) si la gama es Alta/Premium. Sugiere giros de alto ticket (Especialidad, Fine Dining, Boutiques, Wellness Premium).
+            Actúa como Director de Desarrollo Inmobiliario PropTech. Analiza este entorno: {radiografia}.
+            REGLA DE ORO: La clasificación dura de la zona es '{radiografia['gama_sugerida_por_datos']}'. 
+            Es imperativo que el mix de giros corresponda estrictamente a este nivel socioeconómico. NO sugieras giros masivos o de bajo ticket en zonas Premium.
             
-            Evalúa cómo los {radiografia['negocios_denue_250m']} negocios (DENUE) impactan como infraestructura o corredor comercial.
+            Analiza cómo la densidad comercial (DENUE) y el perfil demográfico justifican este ecosistema.
             
             Devuelve SOLO un JSON puro con esta estructura exacta:
             {{
                 "analisis_entorno": {{
-                    "gama_confirmada": "Alta / Premium",
-                    "influencia_infraestructura": "Cómo el volumen de DENUE y la escolaridad dictan el ecosistema comercial de este punto..."
+                    "gama_confirmada": "Nivel socioeconómico objetivo",
+                    "influencia_infraestructura": "Explicación técnica de la saturación comercial y perfil demográfico..."
                 }},
                 "giros": [
-                    {{"giro": "Nombre de Alto Nivel", "viabilidad": 90, "categoria": "Categoría", "justificacion": "Por qué funciona en este NSE específico"}}
+                    {{"giro": "Nombre", "viabilidad": 90, "categoria": "Categoría", "justificacion": "Por qué es viable"}}
                 ]
             }}
             """
@@ -129,7 +123,7 @@ def consultar_ai(radiografia, tipo_analisis, giro=None):
             if datos_json:
                 return datos_json
             else:
-                return {"error": "La IA no respetó el formato JSON complejo.", "raw": response.text}
+                return {"error": "La IA no respetó el formato JSON.", "raw": response.text}
                 
     except Exception as e:
         return {"error": f"Error de Conexión: {str(e)}"}
@@ -138,8 +132,13 @@ def consultar_ai(radiografia, tipo_analisis, giro=None):
 # INTERFAZ VISUAL
 # ==============================================================================
 
+# LÓGICA DE PURGA PARA EVITAR VALUE ERROR POR DATAFRAMES RESIDUALES
 if 'c_lat' not in st.session_state:
     st.session_state.update({'c_lat': 20.605, 'c_lng': -100.382, 'res_ia': None, 'tipo_res': None, 'ctx': {}})
+
+# Si quedó un DataFrame atrapado en la memoria de sesiones anteriores, lo limpiamos
+if isinstance(st.session_state.get('res_ia'), pd.DataFrame):
+    st.session_state.res_ia = None
 
 st.title("Visor Urbano MAX")
 st.markdown("### Plataforma de Inteligencia Sociodemográfica y Territorial")
@@ -174,15 +173,13 @@ with c_diag:
     st.subheader("Configuración de Análisis")
     opcion = st.radio("Modo de Inteligencia:", ["Diagnóstico de Gama y Barrido", "Validar Giro Específico"])
     
-    # Extraemos el contexto ANTES de darle click, para mostrar los KPIs
     ctx = obtener_contexto_local(st.session_state.c_lat, st.session_state.c_lng)
     
-    # MOSTRAR MÉTRICAS DEMOGRÁFICAS EN VIVO EN EL MENÚ
     st.markdown("**Pulso del Micro-Entorno (Radio 250m):**")
     m1, m2 = st.columns(2)
-    m1.metric("Escolaridad (Años)", f"{ctx.get('escolaridad_promedio', 0)}")
+    m1.metric("Escolaridad Promedio", f"{ctx.get('escolaridad_promedio', 0)} Años")
     m2.metric("Gama Estimada", ctx.get('gama_sugerida_por_datos', 'N/D'))
-    st.metric("Volumen Comercial (DENUE)", f"{ctx.get('negocios_denue_250m', 0)} locales")
+    st.metric("Volumen Comercial (DENUE)", f"{ctx.get('negocios_denue_250m', 0)} locales activos")
 
     if opcion == "Diagnóstico de Gama y Barrido":
         if st.button("EJECUTAR DIAGNÓSTICO", type="primary", use_container_width=True):
@@ -196,27 +193,29 @@ with c_diag:
         giro_in = st.text_input("Ingresa el giro comercial:")
         if st.button("VALIDAR GIRO", type="primary", use_container_width=True):
             if giro_in:
-                with st.spinner("Evaluando giro contra el perfil de la zona..."):
+                with st.spinner("Evaluando factibilidad..."):
                     st.session_state.ctx = ctx
                     st.session_state.res_ia = consultar_ai(ctx, "Validacion", giro_in)
                     st.session_state.tipo_res = "Validacion"
                     st.rerun()
 
 # ==============================================================================
-# RESULTADOS (NUEVA UI CONTEXTUAL)
+# RESULTADOS
 # ==============================================================================
 
-if st.session_state.get('res_ia'):
+# Aquí está el blindaje para que jamás vuelva a dar ValueError con Pandas
+if st.session_state.get('res_ia') is not None:
     st.markdown("---")
     
     if st.session_state.get('tipo_res') == "Barrido":
         datos = st.session_state.res_ia
         
-        if "error" in datos:
+        # Validación de seguridad si el diccionario llegó mal
+        if isinstance(datos, dict) and "error" in datos:
             st.error("Error al generar el dictamen. Intenta de nuevo.")
-            st.write(datos["raw"])
-        else:
-            # 1. PANEL DE DIAGNÓSTICO DE ENTORNO (Lo que pedías ver)
+            st.write(datos.get("raw", ""))
+            
+        elif isinstance(datos, dict) and "analisis_entorno" in datos:
             st.subheader("Dictamen de Inteligencia Comercial")
             entorno = datos.get("analisis_entorno", {})
             
@@ -227,16 +226,18 @@ if st.session_state.get('res_ia'):
                 st.success(f"🏢 **Influencia de Infraestructura y Competencia:**\n\n{entorno.get('influencia_infraestructura', '')}")
             
             st.markdown("---")
-            
-            # 2. TABLA DE GIROS (Ahora filtrada por la IA para respetar la gama)
             st.subheader("Tenant Mix Recomendado (Alineado a la Gama)")
-            df_giros = pd.DataFrame(datos.get("giros", []))
             
+            df_giros = pd.DataFrame(datos.get("giros", []))
             if not df_giros.empty:
                 if "categoria" in df_giros.columns:
                     st.bar_chart(df_giros.groupby("categoria")["viabilidad"].mean())
                 st.dataframe(df_giros.sort_values(by="viabilidad", ascending=False), use_container_width=True, hide_index=True)
+            else:
+                st.warning("No se pudieron tabular los giros recomendados.")
+        else:
+            st.warning("La IA arrojó un formato inesperado.")
             
     else:
         st.subheader("Evaluación Quirúrgica de Giro")
-        st.write(st.session_state.res_ia)
+        st.success(st.session_state.res_ia)
