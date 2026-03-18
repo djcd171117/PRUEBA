@@ -71,7 +71,7 @@ def evaluar_giro_usuario_ai(giro_usuario, contexto_local):
     try:
         response = model.generate_content(prompt)
         return response.text
-    exceptException as e:
+    except Exception as e:
         return f"Error en la evaluación de la IA: {str(e)}"
 
 def generar_imagen_mapa_reporte(m, nombre_reporte):
