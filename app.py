@@ -146,7 +146,7 @@ if 'c_lat' not in st.session_state:
 if isinstance(st.session_state.get('res_ia'), pd.DataFrame):
     st.session_state.res_ia = None
 
-st.title("Visor Urbano MAX")
+st.title("Visor Urbano")
 st.markdown("### Plataforma de Inteligencia Urbana")
 
 c_map, c_diag = st.columns([2, 1])
