@@ -12,7 +12,7 @@ import re
 import requests
 
 # ==============================================================================
-# 1. CONFIGURACIÓN DE PÁGINA
+# 1. CONFIGURACIÓN DE PÁGINA (CONGELADA)
 # ==============================================================================
 st.set_page_config(page_title="Visor Urbano MAX", layout="wide")
 
@@ -37,11 +37,9 @@ def obtener_poligonos_edificios(lat, lon, dist=200):
 
 @st.cache_data
 def obtener_vialidades_principales(lat, lon, dist=1000):
-    # NUEVA FUNCIÓN: Extrae solo avenidas y calles principales conectadas
     try:
         tags = {'highway': ['primary', 'secondary', 'tertiary', 'trunk']}
         roads = ox.features_from_point((lat, lon), tags=tags, dist=dist)
-        # Filtramos para asegurarnos de que solo sean líneas (evitar errores geométricos)
         roads = roads[roads.geometry.type.isin(['LineString', 'MultiLineString'])]
         return roads
     except:
@@ -139,7 +137,7 @@ def consultar_ai(radiografia, tipo_analisis, giro=None):
         return {"error": f"Error de Conexión: {str(e)}"}
 
 # ==============================================================================
-# INTERFAZ VISUAL (ETIQUETAS ACTUALIZADAS)
+# INTERFAZ VISUAL
 # ==============================================================================
 
 if 'c_lat' not in st.session_state:
@@ -148,7 +146,6 @@ if 'c_lat' not in st.session_state:
 if isinstance(st.session_state.get('res_ia'), pd.DataFrame):
     st.session_state.res_ia = None
 
-# TÍTULOS ACTUALIZADOS SEGÚN TU PETICIÓN
 st.title("Visor Urbano MAX")
 st.markdown("### Plataforma de Inteligencia Urbana")
 
@@ -158,7 +155,7 @@ with c_map:
     lat, lon = st.session_state.c_lat, st.session_state.c_lng
     m = folium.Map(location=[lat, lon], zoom_start=16, tiles='CartoDB positron') 
     
-    # 1. POLÍGONOS DE CONSTRUCCIÓN (MÁS VISIBLES: Opacidad de 0.15 a 0.4)
+    # 1. POLÍGONOS DE CONSTRUCCIÓN
     with st.spinner("Cargando huellas constructivas..."):
         buildings_gdf = obtener_poligonos_edificios(lat, lon, dist=200)
         if not buildings_gdf.empty:
@@ -167,19 +164,18 @@ with c_map:
                 style_function=lambda x: {'fillColor': '#9b59b6', 'color': '#8e44ad', 'weight': 1.5, 'fillOpacity': 0.4}
             ).add_to(m)
 
-    # 2. VIALIDADES (SOLO APARECEN DESPUÉS DE ACCIONAR EL ANÁLISIS)
+    # 2. VIALIDADES (Aparecen al ejecutar análisis)
     if st.session_state.get('res_ia') is not None:
         with st.spinner("Trazando conectividad vial..."):
             roads_gdf = obtener_vialidades_principales(lat, lon, dist=1000)
             if not roads_gdf.empty:
                 folium.GeoJson(
                     roads_gdf,
-                    # Estilo de vialidades: Gris oscuro/Negro
                     style_function=lambda x: {'color': '#2c3e50', 'weight': 3.5, 'opacity': 0.8},
                     tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['Vialidad:'], localize=True)
                 ).add_to(m)
 
-    # 3. LOS 3 RADIOS DE ANÁLISIS
+    # 3. RADIOS DE ANÁLISIS
     folium.Circle([lat, lon], radius=50, color='#3498db', fill=True, fill_opacity=0.2, weight=1, tooltip="Micro (50m)").add_to(m)
     folium.Circle([lat, lon], radius=200, color='#e67e22', weight=2, dash_array='5,5', fill=False, tooltip="Meso (200m)").add_to(m)
     folium.Circle([lat, lon], radius=1000, color='#e74c3c', weight=1.5, fill=False, tooltip="Macro (1000m)").add_to(m)
@@ -191,25 +187,21 @@ with c_map:
     if map_res.get("last_clicked"):
         st.session_state.c_lat, st.session_state.c_lng = map_res["last_clicked"]["lat"], map_res["last_clicked"]["lng"]
         st.session_state.res_ia = None
+        st.session_state.tipo_res = None
         st.rerun()
 
 with c_diag:
     st.subheader("Configuración de Análisis")
     
-    # ETIQUETAS DE RADIO BUTTON ACTUALIZADAS SEGÚN TU PETICIÓN
     opcion = st.radio("Modo de Inteligencia:", ["Diagnóstico Urbano", "Validar Giro"])
     
+    # Extraemos contexto pero NO lo mostramos aquí, lo guardamos para el análisis
     ctx = obtener_contexto_local(st.session_state.c_lat, st.session_state.c_lng)
     
-    st.markdown("**Pulso del Micro-Entorno (Radio 250m):**")
-    m1, m2 = st.columns(2)
-    m1.metric("Nivel Educativo", ctx.get('nivel_educativo', 'N/D'))
-    m2.metric("Gama Estimada", ctx.get('gama_sugerida_por_datos', 'N/D'))
-    st.metric("Volumen Comercial (DENUE)", f"{ctx.get('negocios_denue_250m', 0)} locales activos")
+    st.markdown("<br>", unsafe_allow_html=True) # Espacio visual
 
-    # LÓGICA DE BOTONES ACTUALIZADA CON LAS NUEVAS ETIQUETAS
     if opcion == "Diagnóstico Urbano":
-        if st.button("EJECUTAR DIAGNÓSTICO", type="primary", use_container_width=True):
+        if st.button("🚀 EJECUTAR DIAGNÓSTICO", type="primary", use_container_width=True):
             with st.spinner("Procesando perfil sociodemográfico y comercial..."):
                 st.session_state.ctx = ctx
                 st.session_state.res_ia = consultar_ai(ctx, "Barrido")
@@ -218,7 +210,7 @@ with c_diag:
                 
     else:
         giro_in = st.text_input("Ingresa el giro comercial:")
-        if st.button("VALIDAR GIRO", type="primary", use_container_width=True):
+        if st.button("🎯 VALIDAR GIRO", type="primary", use_container_width=True):
             if giro_in:
                 with st.spinner("Evaluando factibilidad..."):
                     st.session_state.ctx = ctx
@@ -226,13 +218,35 @@ with c_diag:
                     st.session_state.tipo_res = "Validacion"
                     st.rerun()
 
+    st.markdown("---")
+    # BOTÓN NUEVO: LIMPIAR PANTALLA
+    if st.button("🧹 Limpiar Pantalla", use_container_width=True):
+        st.session_state.res_ia = None
+        st.session_state.tipo_res = None
+        st.rerun()
+
 # ==============================================================================
-# RESULTADOS
+# RESULTADOS (MOSAICO Y DICTAMEN)
 # ==============================================================================
 
 if st.session_state.get('res_ia') is not None:
     st.markdown("---")
     
+    # NUEVO: MOSAICO DE DATOS (En la parte inferior, evitando textos cortados)
+    st.subheader("🧩 Contexto del Predio (Datos Duros)")
+    ctx_guardado = st.session_state.get('ctx', {})
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.info(f"🎓 **Nivel Educativo**\n\n{ctx_guardado.get('nivel_educativo', 'N/D')}")
+    with col2:
+        st.warning(f"💎 **Gama Estimada**\n\n{ctx_guardado.get('gama_sugerida_por_datos', 'N/D')}")
+    with col3:
+        st.success(f"🏪 **Volumen Comercial (DENUE)**\n\n{ctx_guardado.get('negocios_denue_250m', 0)} locales activos")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # DICTAMEN DE IA
     if st.session_state.get('tipo_res') == "Barrido":
         datos = st.session_state.res_ia
         
@@ -241,17 +255,17 @@ if st.session_state.get('res_ia') is not None:
             st.write(datos.get("raw", ""))
             
         elif isinstance(datos, dict) and "analisis_entorno" in datos:
-            st.subheader("Dictamen de Inteligencia Comercial")
+            st.subheader("🧠 Dictamen de Inteligencia Comercial")
             entorno = datos.get("analisis_entorno", {})
             
             c1, c2 = st.columns([1, 2])
             with c1:
-                st.info(f"💎 **Clasificación de Zona:**\n\n{entorno.get('gama_confirmada', 'Alta')}")
+                st.markdown(f"**Clasificación de Zona:**<br>{entorno.get('gama_confirmada', 'Alta')}", unsafe_allow_html=True)
             with c2:
-                st.success(f"🏢 **Influencia de Infraestructura y Competencia:**\n\n{entorno.get('influencia_infraestructura', '')}")
+                st.markdown(f"**Influencia de Infraestructura y Competencia:**<br>{entorno.get('influencia_infraestructura', '')}", unsafe_allow_html=True)
             
             st.markdown("---")
-            st.subheader("Tenant Mix Recomendado (Alineado a la Gama)")
+            st.subheader("📊 Tenant Mix Recomendado")
             
             df_giros = pd.DataFrame(datos.get("giros", []))
             if not df_giros.empty:
@@ -264,5 +278,5 @@ if st.session_state.get('res_ia') is not None:
             st.warning("La IA arrojó un formato inesperado.")
             
     else:
-        st.subheader("Evaluación Quirúrgica de Giro")
+        st.subheader("🎯 Evaluación Quirúrgica de Giro")
         st.success(st.session_state.res_ia)
