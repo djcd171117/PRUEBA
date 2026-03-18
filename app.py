@@ -10,7 +10,7 @@ import json
 import requests
 
 # 1. CONFIGURACIÓN DE PÁGINA
-st.set_page_config(page_title="Visor Urbano MAX", layout="wide")
+st.set_page_config(page_title="Visor Urbano", layout="wide")
 
 # 2. INICIALIZACIÓN DE CLIENTES Y CREDENCIALES
 try:
@@ -135,7 +135,7 @@ with c_map:
 with c_diag:
     st.subheader("Herramientas de Diagnóstico")
     
-    opcion = st.radio("Selecciona la ruta de análisis:", ["Barrido General de Mercado", "Validar Giro Específico"])
+    opcion = st.radio("Selecciona la ruta de análisis:", ["Analizar zona", "Validar propuesta"])
     
     ctx = obtener_contexto_local(st.session_state.c_lat, st.session_state.c_lng)
     st.info(f"📊 INEGI (DENUE): {ctx['saturacion_inegi']}")
