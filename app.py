@@ -7,7 +7,6 @@ from streamlit_folium import st_folium
 import googlemaps
 from google import genai
 import json
-import re
 import requests
 
 # 1. CONFIGURACIÓN DE PÁGINA
@@ -60,35 +59,45 @@ def obtener_contexto_local(lat, lon):
     return ctx
 
 # ==============================================================================
-# MOTOR IA Y PARSEO SEGURO
+# MOTOR IA Y PARSEO SEGURO (TU BLOQUE RESCATADO)
 # ==============================================================================
 
-def procesar_json_robusto(texto_ia):
-    match = re.search(r'\[.*\]', texto_ia, re.DOTALL)
-    if match:
-        try:
-            return pd.DataFrame(json.loads(match.group(0)))
-        except:
-            pass
-    return pd.DataFrame([{"giro": "Error", "viabilidad": 0, "categoria": "N/D", "justificacion": "Error de formato JSON"}])
-
-def consultar_ia(ctx, tipo_analisis, giro=None):
-    # Usando exactamente el modelo indicado en tu documentación
-    modelo_gemini = "gemini-3-flash-preview"
-    
-    if tipo_analisis == "Validacion":
-        prompt = f"""Evalúa la viabilidad del giro '{giro}' en estas coordenadas con este contexto: {ctx}. 
-        Responde breve y técnico: 1. Viabilidad general. 2. Riesgo principal. 3. Oportunidad."""
-    else:
-        prompt = f"""Realiza un barrido exhaustivo de categorías comerciales viables para este punto: {ctx}.
-        Omite giros con viabilidad menor a 70. 
-        Devuelve EXCLUSIVAMENTE un arreglo JSON puro con esta estructura: [{{"giro": "Nombre", "viabilidad": 85, "categoria": "Servicios", "justificacion": "Datos"}}]"""
-
+def consultar_ai(radiografia, tipo_analisis, giro=None):
     try:
-        res = gemini_client.models.generate_content(model=modelo_gemini, contents=prompt)
-        return res.text
+        # Usamos exactamente el modelo que comprobaste que funciona
+        model_name = 'gemini-1.5-flash' 
+        
+        if tipo_analisis == "Validacion":
+            prompt = f"Analiza la viabilidad del giro '{giro}' en este predio con este contexto: {radiografia}. Responde en 4 líneas breves: Viabilidad general, Riesgo principal y Oportunidad."
+            response = gemini_client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            return response.text
+            
+        else:
+            # Opción de Barrido (Retorna el DataFrame directamente usando tu lógica)
+            prompt = f"Analiza este predio y sugiere 8 giros comerciales viables. Responde SOLO en JSON con formato [{{'giro': 'Nombre', 'viabilidad': 90, 'categoria': 'Servicios', 'justificacion': 'Razón'}}]: {radiografia}"
+            response = gemini_client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            
+            # TU BLOQUE EXACTO DE EXTRACCIÓN
+            res_text = response.text
+            start = res_text.find('[')
+            end = res_text.rfind(']') + 1
+            if start != -1 and end != 0:
+                json_str = res_text[start:end]
+                return pd.DataFrame(json.loads(json_str))
+            else:
+                return pd.DataFrame([{"giro": "Error de Formato", "viabilidad": 0, "categoria": "Error", "justificacion": "La IA no envió un JSON válido"}])
+                
     except Exception as e:
-        return f"Error de IA: {e}"
+        if tipo_analisis == "Validacion":
+            return f"Error de Conexión: {str(e)}"
+        else:
+            return pd.DataFrame([{"giro": "Error de Conexión", "viabilidad": 0, "categoria": "Error", "justificacion": str(e)}])
 
 # ==============================================================================
 # INTERFAZ VISUAL Y GESTIÓN DE ESTADO
@@ -131,8 +140,9 @@ with c_diag:
 
     if opcion == "Barrido General de Mercado":
         if st.button("EJECUTAR BARRIDO", type="primary", use_container_width=True):
-            with st.spinner("Analizando mercado..."):
-                st.session_state.res_ia = consultar_ia(ctx, "Barrido")
+            with st.spinner("Analizando mercado y armando tabla..."):
+                # Ahora consultar_ai devuelve un DataFrame directamente en este modo
+                st.session_state.res_ia = consultar_ai(ctx, "Barrido")
                 st.session_state.tipo_res = "Barrido"
                 st.rerun()
                 
@@ -140,8 +150,9 @@ with c_diag:
         giro_in = st.text_input("Ingresa el giro:")
         if st.button("VALIDAR GIRO", type="primary", use_container_width=True):
             if giro_in:
-                with st.spinner("Validando factibilidad..."):
-                    st.session_state.res_ia = consultar_ia(ctx, "Validacion", giro_in)
+                with st.spinner("Validando factibilidad de tu giro..."):
+                    # Aquí consultar_ai devuelve texto
+                    st.session_state.res_ia = consultar_ai(ctx, "Validacion", giro_in)
                     st.session_state.tipo_res = "Validacion"
                     st.rerun()
             else:
@@ -151,20 +162,23 @@ with c_diag:
 # RENDERIZADO DE RESULTADOS
 # ==============================================================================
 
-if st.session_state.get('res_ia'):
+# Usamos .get() para evitar el AttributeError que vimos antes
+if st.session_state.get('res_ia') is not None:
     st.markdown("---")
     
     if st.session_state.get('tipo_res') == "Barrido":
         st.subheader("Resultados del Barrido")
-        df = procesar_json_robusto(st.session_state.res_ia)
+        
+        # Como recuperamos tu función, res_ia YA es un DataFrame de Pandas
+        df = st.session_state.res_ia 
         
         if not df.empty and "giro" in df.columns:
             if "categoria" in df.columns:
                 st.bar_chart(df.groupby("categoria")["viabilidad"].mean())
-            st.dataframe(df.sort_values(by="viabilidad", ascending=False), use_container_width=True)
+            st.dataframe(df.sort_values(by="viabilidad", ascending=False), use_container_width=True, hide_index=True)
         else:
-            st.error("La IA no devolvió un formato tabular válido.")
-            st.write(st.session_state.res_ia)
+            st.error("Error al renderizar los resultados.")
+            st.dataframe(df)
             
     else:
         st.subheader("Dictamen de Viabilidad")
