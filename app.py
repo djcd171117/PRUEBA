@@ -11,7 +11,7 @@ import json
 import requests
 
 # 1. CONFIGURACIÓN DE PÁGINA (SOBRIA Y PROFESIONAL)
-st.set_page_config(page_title="Visor Urbano MAX", layout="wide")
+st.set_page_config(page_title="Visor Urbano", layout="wide")
 
 # 2. INICIALIZACIÓN DE CLIENTES Y CREDENCIALES
 try:
@@ -113,7 +113,7 @@ if 'c_lat' not in st.session_state:
     st.session_state.update({'c_lat': 20.605, 'c_lng': -100.382, 'res_ia': None, 'tipo_res': None})
 
 st.title("Visor Urbano")
-st.markdown("### Plataforma Híbrida de Inteligencia Territorial (Querétaro)")
+st.markdown("### Plataforma de Inteligencia Territorial")
 
 c_map, c_diag = st.columns([2, 1])
 
