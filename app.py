@@ -1,164 +1,153 @@
 # ==============================================================================
-# CAPA 1: IMPORTACIONES Y CONFIGURACIÓN (RESTAURADA)
+# CAPA 1: IMPORTACIONES Y SERVICIOS
 # ==============================================================================
 import streamlit as st
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
 import folium
+from folium.plugins import HeatMap
 from streamlit_folium import st_folium
-import json
-import catboost as cb # Restaurado
-from scipy.spatial import Voronoi # Restaurado
-from google import genai
 import googlemaps
-import io
+from google import genai
+import json
 
-# Limpieza de emojis y nomenclatura sobria
 st.set_page_config(page_title="Visor Urbano PropTech", layout="wide")
 
-# Inicialización segura (encriptada)
+# Inicialización de APIs (Encriptadas en Secrets)
 try:
     G_CLIENT = googlemaps.Client(key=st.secrets["G_MAPS_KEY"])
     gemini_client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
 except Exception as e:
-    st.error("Error en las llaves de API.")
+    st.error("Error en llaves API. Revisa los Secrets.")
     st.stop()
 
 # ==============================================================================
-# CAPA 2: MOTOR DE DIAGNÓSTICO TRADICIONAL (INEGI + VORONOI + CB)
+# CAPA 2: MOTOR DE DATOS (VORONOI + INEGI)
 # ==============================================================================
 
 @st.cache_resource
-def cargar_modelo_catboost(path):
-    # Función para restaurar la carga de tu modelo de tesis
-    modelo = cb.CatBoostClassifier()
-    # modelo.load_model(path) # Reemplazar con tu path real
-    return modelo
-
-def extraer_contexto_inegi(lat, lon):
-    # Restaurar la función que une tu polígono Voronoi de INEGI con el punto
-    # df_inegi = gpd.read_file('tu_capa_inegi.geojson')
-    # ctx_g = df_inegi[df_inegi.intersects(Point(lon, lat))]
-    
-    # Placeholder de estructura para el ejemplo actual
-    return {
-        "pob_tot": 5420, # Ejemplo de datos INEGI reales
-        "escolaridad_promedio": 12.1,
-        "clase_cb": "Comercio Vecinal Consolidad",
-        "probabilidad_cb": 0.82
-    }
-
-# ==============================================================================
-# CAPA 3: MOTOR DE INTELIGENCIA GENERATIVA (INTERACTIVO + REPORTES)
-# ==============================================================================
-
-def evaluar_giro_usuario_ai(giro_usuario, contexto_local):
-    """
-    Función para que la IA evalúe un giro ingresado por el usuario.
-    """
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
-    prompt = f"""
-    Eres un analista de geomarketing senior en México.
-    Un usuario quiere abrir el siguiente giro: "{giro_usuario}" en una zona con estas características:
-    - Población Total (Radio 1km): {contexto_local['pob_tot']}
-    - Escolaridad Promedio: {contexto_local['escolaridad_promedio']} años
-    - Tipo de Zona (según CatBoost): {contexto_local['clase_cb']}
-
-    Evalúa brevemente (máximo 4 líneas) la viabilidad de este giro en este contexto específico.
-    Responde con un cuadro de texto directo y sobrio.
-    """
+def cargar_voronoi_tesis():
+    """Carga el GeoJSON con tus polígonos Voronoi y datos INEGI unidos."""
     try:
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        return f"Error en la evaluación de la IA: {str(e)}"
+        # Reemplaza con el nombre exacto de tu archivo en GitHub
+        gdf = gpd.read_file("tu_capa_voronoi_inegi.geojson") 
+        return gdf.to_crs("EPSG:4326")
+    except:
+        return gpd.GeoDataFrame()
 
-def generar_imagen_mapa_reporte(m, nombre_reporte):
-    """
-    Función para convertir el mapa folium actual en una imagen PNG.
-    *Nota: Requiere Selenium/WebDriver configurado en el servidor para funcionar.*
-    """
-    img_data = m._to_png(delay=6) # delay para que carguen los tiles
-    return img_data
+def obtener_datos_calor(gdf, lat, lon, columna_valor):
+    """Filtra y prepara datos para el HeatMap solo cuando se solicita."""
+    if gdf.empty: return []
+    
+    # Punto de análisis
+    p = Point(lon, lat)
+    # Filtro de proximidad (radio ~2km para ver el contexto del mapa de calor)
+    distancia_filtro = 0.02 
+    df_local = gdf[gdf.geometry.distance(p) < distancia_filtro]
+    
+    # Extraemos [lat, lon, peso] usando el centroide de cada polígono Voronoi
+    puntos_calor = []
+    for _, row in df_local.iterrows():
+        centro = row.geometry.centroid
+        puntos_calor.append([centro.y, centro.x, row[columna_valor]])
+    return puntos_calor
 
 # ==============================================================================
-# CAPA 4: INTERFAZ VISUAL (SOBRIA, SIN EMOJIS, CON MÓDULOS NUEVOS)
+# CAPA 3: INTERFAZ Y LÓGICA DE BOTONES
 # ==============================================================================
-# (Carga de datos base de edificios y anclas igual que la versión anterior, 
-# pero quitando los emojis de la carga).
 
-st.title("Visor Urbano PropTech")
-#st.markdown("### Análisis de Inteligencia Urbana Multiescalar") # ELIMINADO
+# Carga inicial de datos
+if 'gdf_inegi' not in st.session_state:
+    st.session_state.gdf_inegi = cargar_voronoi_tesis()
 
-c_map, c_diag = st.columns([2, 1])
+# Estado de la interfaz
+if 'c_lat' not in st.session_state:
+    st.session_state.update({
+        'c_lat': 20.605, 'c_lng': -100.382, 
+        'analisis': False, 
+        'mostrar_calor': None # Controla qué mapa de calor se ve
+    })
 
-with c_map:
-    # Renderizado del mapa (igual que antes pero con radios restaurados si se desea, 
-    # y sin el texto multiescalar).
-    m = folium.Map(location=[st.session_state.c_lat, st.session_state.c_lng], zoom_start=17)
+st.title("Visor Urbano")
+st.caption("Plataforma de Inteligencia Territorial para el Análisis Inmobiliario")
+
+col_map, col_info = st.columns([2, 1])
+
+with col_map:
+    # 1. Crear Mapa Folium Base
+    lat, lon = st.session_state.c_lat, st.session_state.c_lng
+    m = folium.Map(location=[lat, lon], zoom_start=16, tiles='CartoDB positron')
     
-    # (Pintar huellas de edificios y anclas detectadas)
-    
-    map_dict = st_folium(m, width="100%", height=500, key="mapa_principal")
+    # 2. Renderizar HeatMap SOLO si el usuario presionó el botón correspondiente
+    tipo_calor = st.session_state.get('mostrar_calor')
+    if tipo_calor:
+        columna = 'pob_tot' if tipo_calor == 'DEMO' else 'escolaridad'
+        with st.spinner(f"Generando mapa de calor de {tipo_calor}..."):
+            datos_hm = obtener_datos_calor(st.session_state.gdf_inegi, lat, lon, columna)
+            if datos_hm:
+                HeatMap(datos_hm, radius=20, blur=15, gradient={0.4: 'blue', 0.65: 'lime', 1: 'red'}).add_to(m)
+            else:
+                st.warning("No hay datos suficientes para esta zona.")
 
-with c_diag:
-    st.subheader("Herramientas de Análisis")
-    if st.button("Iniciar Inteligencia Urbana", type="primary", use_container_width=True):
-        with st.spinner("Triangulando métricas..."):
-            
-            # 1. Ejecutar Motor Tradicional (INEGI + VORONOI + CATBOOST)
-            ctx_inegi = extraer_contexto_inegi(st.session_state.c_lat, st.session_state.c_lng)
-            
-            # 2. Generar Recomendaciones AI Gen (como antes, pero sin emojis y 
-            # asegurando 8 giros, no 3).
-            # (... código de recomendación AI anterior ...)
-            
-            st.session_state.update({
-                'ctx_inegi': ctx_inegi,
-                #'df_giros_ai': df_giros_ai, 
-                'analisis': True
-            })
+    # 3. Dibujar Radios Metodológicos (50m, 200m, 1000m)
+    folium.Circle([lat, lon], radius=50, color='#2ecc71', fill=True, opacity=0.1).add_to(m)
+    folium.Circle([lat, lon], radius=200, color='#f1c40f', weight=2, fill=False, dash_array='5,5').add_to(m)
+    folium.Circle([lat, lon], radius=1000, color='#e74c3c', weight=1, fill=False).add_to(m)
+    folium.Marker([lat, lon], icon=folium.Icon(color='black', icon='location-dot', prefix='fa')).add_to(m)
+
+    # Widget del mapa
+    map_input = st_folium(m, width="100%", height=550, key="mapa_principal")
+    
+    if map_input.get("last_clicked"):
+        st.session_state.c_lat = map_input["last_clicked"]["lat"]
+        st.session_state.c_lng = map_input["last_clicked"]["lng"]
+        st.session_state.mostrar_calor = None # Limpiar calor al mover el punto
+        st.session_state.analisis = False
+        st.rerun()
+
+with col_info:
+    st.subheader("Motor de Diagnóstico")
+    
+    # BOTÓN 1: Análisis General (Datos Duros + AI)
+    if st.button("🚀 INICIAR INTELIGENCIA URBANA", use_container_width=True, type="primary"):
+        with st.spinner("Analizando micro-entorno..."):
+            # Aquí iría tu lógica de cruce de Point-in-Polygon con los Voronoi
+            # st.session_state.ctx = extraer_data_voronoi(lat, lon)
+            st.session_state.analisis = True
             st.rerun()
 
-    # MÓDULO NUEVO: EVALUACIÓN DE GIRO USUARIO
-    if st.session_state.get('analisis'):
+    # Módulo interactivo de la IA
+    if st.session_state.analisis:
         st.markdown("---")
-        st.subheader("Simulador de Viabilidad de Giro")
-        giro_input = st.text_input("Ingresa un giro comercial específico:", placeholder="ej. Papelería, Taquería")
-        
-        if st.button("Evaluar mi Giro"):
-            with st.spinner("Analizando viabilidad..."):
-                respuesta_ai = evaluar_giro_usuario_ai(giro_input, st.session_state.ctx_inegi)
-                st.session_state.evaluacion_usuario = respuesta_ai
-                st.rerun()
-                
-        if 'evaluacion_usuario' in st.session_state:
-            st.success(st.session_state.evaluacion_usuario)
+        st.write("**Simulador de Viabilidad**")
+        giro_propio = st.text_input("Ingresa un giro para evaluar:", placeholder="Ej. Farmacia, Coworking")
+        if st.button("Validar Giro"):
+            # Respuesta de Gemini simplificada y directa
+            st.info("La IA está analizando tu giro... (Aquí se conecta consultar_ai)")
 
-# SECCIÓN DE REPORTES (BAJO EL MAPA)
-if st.session_state.get('analisis'):
+# ==============================================================================
+# SECCIÓN DE REPORTES (GENERACIÓN DE PNG BAJO DEMANDA)
+# ==============================================================================
+if st.session_state.analisis:
     st.markdown("---")
-    t1, t2, t3 = st.tabs(["Demografía (INEGI)", "Anclas y Competencia (SIG)", "Dictamen AI"])
+    st.subheader("Centro de Reportes y Mapas de Segmentación")
     
-    # (Lógica de las pestañas anteriores pero usando los datos de ctx_inegi restaurados)
-    
-    st.markdown("---")
-    st.subheader("Centro de Reportes")
     c1, c2, c3 = st.columns(3)
     
     with c1:
-        st.write("Demografía (PNG)")
-        st.image("tu_mapa_de_calor_demografia_estatico.png") # Cargar tu PNG restaurado de Voronoi
-        # st.download_button("Descargar", ...)
-        
+        st.write("Demografía")
+        if st.button("Generar Mapa de Calor (Población)"):
+            st.session_state.mostrar_calor = 'DEMO'
+            st.rerun()
+            
     with c2:
-        st.write("Anclas y Contexto (PNG)")
-        # Lógica para guardar el mapa folium actual como imagen
-        img_maps = generar_imagen_mapa_reporte(m, "anclas_contexto") 
-        st.image(img_maps)
-        # st.download_button("Descargar", img_maps, ...)
-        
+        st.write("Escolaridad")
+        if st.button("Generar Mapa de Calor (Grado Académico)"):
+            st.session_state.mostrar_calor = 'EDU'
+            st.rerun()
+            
     with c3:
-        st.write("Dictamen Ejecutivo (PDF)")
-        # Lógica para exportar el texto de la IA y gráficas a PDF
+        st.write("Exportar Dictamen")
+        if st.button("Preparar PNG para Reporte"):
+            st.success("Mapa listo para captura de pantalla.")
